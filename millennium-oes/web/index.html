@@ -1,0 +1,294 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Millennium OES</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div class="app">
+
+    <!-- Header -->
+    <header class="header">
+      <div class="header-left">
+        <span class="logo">MILLENNIUM <span class="logo-accent">OES</span></span>
+        <span class="status-dot" id="connectionDot" title="Disconnected"></span>
+      </div>
+      <div class="header-right">
+        <div class="account-stat">
+          <span class="stat-label">EQUITY</span>
+          <span class="stat-value" id="equity">—</span>
+        </div>
+        <div class="account-stat">
+          <span class="stat-label">CASH</span>
+          <span class="stat-value" id="cash">—</span>
+        </div>
+        <div class="account-stat">
+          <span class="stat-label">BUYING POWER</span>
+          <span class="stat-value" id="buyingPower">—</span>
+        </div>
+        <div class="account-stat">
+          <span class="stat-label">DAY P&L</span>
+          <span class="stat-value" id="dailyPnl">—</span>
+        </div>
+        <button class="kill-switch" id="killSwitchBtn" onclick="toggleKillSwitch()">
+          ⚡ KILL SWITCH
+        </button>
+      </div>
+    </header>
+
+    <div class="main">
+
+      <!-- Left: Order Entry -->
+      <section class="panel order-entry">
+        <h2 class="panel-title">ORDER ENTRY</h2>
+
+        <div class="form-row">
+          <div class="form-group">
+            <label>SYMBOL</label>
+            <input type="text" id="symbol" placeholder="AAPL" maxlength="10"
+              oninput="this.value = this.value.toUpperCase()" onblur="fetchQuote()" />
+          </div>
+          <div class="form-group quote-display">
+            <label>LAST PRICE</label>
+            <span id="quotePrice" class="quote-value">—</span>
+          </div>
+        </div>
+
+        <div class="form-row">
+          <div class="form-group">
+            <label>SIDE</label>
+            <div class="btn-group">
+              <button class="side-btn buy active" id="sideBuy" onclick="setSide('buy')">BUY</button>
+              <button class="side-btn sell" id="sideSell" onclick="setSide('sell')">SELL</button>
+              <button class="side-btn short" id="sideShort" onclick="setSide('sell_short')">SHORT</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="form-row">
+          <div class="form-group">
+            <label>ORDER TYPE</label>
+            <select id="orderType" onchange="onOrderTypeChange()">
+              <optgroup label="Basic">
+                <option value="MARKET">Market</option>
+                <option value="LIMIT">Limit</option>
+                <option value="STOP">Stop</option>
+                <option value="STOP_LIMIT">Stop-Limit</option>
+              </optgroup>
+              <optgroup label="Auction">
+                <option value="MARKET_ON_OPEN">Market-on-Open (MOO)</option>
+                <option value="MARKET_ON_CLOSE">Market-on-Close (MOC)</option>
+                <option value="LIMIT_ON_OPEN">Limit-on-Open (LOO)</option>
+                <option value="LIMIT_ON_CLOSE">Limit-on-Close (LOC)</option>
+              </optgroup>
+              <optgroup label="Conditional">
+                <option value="TRAILING_STOP">Trailing Stop</option>
+                <option value="MARKET_IF_TOUCHED">Market-if-Touched (MIT)</option>
+                <option value="LIMIT_IF_TOUCHED">Limit-if-Touched (LIT)</option>
+                <option value="FUNARI">Funari</option>
+              </optgroup>
+              <optgroup label="Linked">
+                <option value="BRACKET">Bracket</option>
+                <option value="OCO">One-Cancels-Other (OCO)</option>
+                <option value="OTO">One-Triggers-Other (OTO)</option>
+              </optgroup>
+              <optgroup label="Algorithmic">
+                <option value="TWAP">TWAP</option>
+                <option value="VWAP">VWAP</option>
+                <option value="ICEBERG">Iceberg</option>
+              </optgroup>
+            </select>
+          </div>
+          <div class="form-group">
+            <label>TIME IN FORCE</label>
+            <select id="tif">
+              <option value="day">Day</option>
+              <option value="gtc">GTC</option>
+              <option value="ioc">IOC</option>
+              <option value="fok">FOK</option>
+              <option value="gtd">GTD</option>
+              <option value="ato">ATO</option>
+              <option value="atc">ATC</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="form-row">
+          <div class="form-group">
+            <label>QUANTITY</label>
+            <input type="number" id="qty" placeholder="100" min="1" step="1" />
+          </div>
+          <div class="form-group" id="notionalGroup" style="display:none">
+            <label>NOTIONAL ($)</label>
+            <input type="number" id="notional" placeholder="10000.00" step="0.01" />
+          </div>
+        </div>
+
+        <!-- Dynamic price fields -->
+        <div id="priceFields">
+          <div class="form-row" id="limitPriceRow" style="display:none">
+            <div class="form-group">
+              <label>LIMIT PRICE</label>
+              <input type="number" id="limitPrice" placeholder="0.00" step="0.01" />
+            </div>
+          </div>
+          <div class="form-row" id="stopPriceRow" style="display:none">
+            <div class="form-group">
+              <label>STOP PRICE</label>
+              <input type="number" id="stopPrice" placeholder="0.00" step="0.01" />
+            </div>
+          </div>
+          <div class="form-row" id="trailRow" style="display:none">
+            <div class="form-group">
+              <label>TRAIL TYPE</label>
+              <select id="trailType">
+                <option value="price">$ Amount</option>
+                <option value="percent">Percent %</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label>TRAIL VALUE</label>
+              <input type="number" id="trailValue" placeholder="1.00" step="0.01" />
+            </div>
+          </div>
+          <div class="form-row" id="touchRow" style="display:none">
+            <div class="form-group">
+              <label>TOUCH PRICE</label>
+              <input type="number" id="touchPrice" placeholder="0.00" step="0.01" />
+            </div>
+          </div>
+          <div class="form-row" id="bracketRow" style="display:none">
+            <div class="form-group">
+              <label>TAKE PROFIT</label>
+              <input type="number" id="takeProfitPrice" placeholder="0.00" step="0.01" />
+            </div>
+            <div class="form-group">
+              <label>STOP LOSS</label>
+              <input type="number" id="stopLossPrice" placeholder="0.00" step="0.01" />
+            </div>
+          </div>
+          <div class="form-row" id="icebergRow" style="display:none">
+            <div class="form-group">
+              <label>VISIBLE QTY</label>
+              <input type="number" id="visibleQty" placeholder="10" step="1" />
+            </div>
+          </div>
+          <div class="form-row" id="algoRow" style="display:none">
+            <div class="form-group">
+              <label>END TIME (HH:MM)</label>
+              <input type="time" id="algoEndTime" />
+            </div>
+            <div class="form-group">
+              <label>SLICES</label>
+              <input type="number" id="algoSlices" placeholder="10" min="2" max="100" />
+            </div>
+          </div>
+        </div>
+
+        <div class="form-row">
+          <div class="form-group checkbox-group">
+            <label>
+              <input type="checkbox" id="extendedHours" />
+              Extended Hours
+            </label>
+          </div>
+        </div>
+
+        <div class="form-actions">
+          <button class="btn-submit" id="submitBtn" onclick="submitOrder()">
+            SUBMIT ORDER
+          </button>
+          <button class="btn-cancel-all" onclick="cancelAllOrders()">
+            CANCEL ALL
+          </button>
+        </div>
+
+        <div id="orderMessage" class="order-message"></div>
+      </section>
+
+      <!-- Center: Order Blotter -->
+      <section class="panel blotter">
+        <div class="panel-header">
+          <h2 class="panel-title">ORDER BLOTTER</h2>
+          <div class="blotter-filters">
+            <input type="text" id="filterSymbol" placeholder="Filter symbol..." oninput="filterOrders()" />
+            <select id="filterStatus" onchange="filterOrders()">
+              <option value="">All Status</option>
+              <option value="new">New</option>
+              <option value="acknowledged">Acknowledged</option>
+              <option value="partially_filled">Partial</option>
+              <option value="filled">Filled</option>
+              <option value="cancelled">Cancelled</option>
+              <option value="rejected">Rejected</option>
+            </select>
+          </div>
+        </div>
+        <div class="table-wrapper">
+          <table class="blotter-table">
+            <thead>
+              <tr>
+                <th>TIME</th>
+                <th>SYMBOL</th>
+                <th>SIDE</th>
+                <th>TYPE</th>
+                <th>QTY</th>
+                <th>FILLED</th>
+                <th>LIMIT</th>
+                <th>STOP</th>
+                <th>AVG PX</th>
+                <th>TIF</th>
+                <th>STATUS</th>
+                <th>ACTION</th>
+              </tr>
+            </thead>
+            <tbody id="ordersBody">
+              <tr class="empty-row">
+                <td colspan="12">No orders yet</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- Right: Positions -->
+      <section class="panel positions">
+        <h2 class="panel-title">POSITIONS</h2>
+        <div class="table-wrapper">
+          <table class="positions-table">
+            <thead>
+              <tr>
+                <th>SYMBOL</th>
+                <th>QTY</th>
+                <th>ENTRY</th>
+                <th>PRICE</th>
+                <th>MKT VAL</th>
+                <th>P&L</th>
+              </tr>
+            </thead>
+            <tbody id="positionsBody">
+              <tr class="empty-row">
+                <td colspan="6">No positions</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+    </div>
+
+    <!-- Activity Log -->
+    <footer class="activity-log">
+      <div class="log-header">
+        <span>ACTIVITY LOG</span>
+        <button onclick="clearLog()" class="btn-clear-log">CLEAR</button>
+      </div>
+      <div id="activityLog" class="log-entries"></div>
+    </footer>
+
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>

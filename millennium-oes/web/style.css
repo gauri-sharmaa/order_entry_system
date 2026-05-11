@@ -1,0 +1,472 @@
+/* -----------------------------------------------------------------------
+   Millennium OES — Dark terminal-style trading UI
+   ----------------------------------------------------------------------- */
+
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  --bg:         #0a0c0f;
+  --bg-panel:   #0f1217;
+  --bg-input:   #161b22;
+  --bg-hover:   #1c2230;
+  --border:     #1e2535;
+  --border-bright: #2a3548;
+  --text:       #c9d1d9;
+  --text-dim:   #6e7681;
+  --text-bright:#e6edf3;
+  --green:      #3fb950;
+  --green-dim:  #1a4a22;
+  --red:        #f85149;
+  --red-dim:    #4a1a1a;
+  --yellow:     #d29922;
+  --blue:       #388bfd;
+  --blue-dim:   #1a2a4a;
+  --purple:     #bc8cff;
+  --accent:     #58a6ff;
+  --font-mono:  'SF Mono', 'Fira Code', 'Consolas', monospace;
+  --font-ui:    -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+}
+
+html, body { height: 100%; background: var(--bg); color: var(--text); font-family: var(--font-mono); font-size: 12px; }
+
+/* -----------------------------------------------------------------------
+   Layout
+   ----------------------------------------------------------------------- */
+
+.app {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  overflow: hidden;
+}
+
+.main {
+  display: grid;
+  grid-template-columns: 320px 1fr 280px;
+  gap: 1px;
+  flex: 1;
+  overflow: hidden;
+  background: var(--border);
+}
+
+/* -----------------------------------------------------------------------
+   Header
+   ----------------------------------------------------------------------- */
+
+.header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 16px;
+  height: 44px;
+  background: var(--bg-panel);
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.logo {
+  font-size: 14px;
+  font-weight: 700;
+  letter-spacing: 3px;
+  color: var(--text-bright);
+}
+.logo-accent { color: var(--accent); }
+
+.status-dot {
+  width: 8px; height: 8px;
+  border-radius: 50%;
+  background: var(--red);
+  margin-left: 10px;
+  transition: background 0.3s;
+}
+.status-dot.connected { background: var(--green); box-shadow: 0 0 6px var(--green); }
+
+.header-right {
+  display: flex;
+  align-items: center;
+  gap: 24px;
+}
+
+.account-stat { display: flex; flex-direction: column; align-items: flex-end; }
+.stat-label { font-size: 9px; color: var(--text-dim); letter-spacing: 1px; }
+.stat-value { font-size: 13px; color: var(--text-bright); font-weight: 600; }
+
+.kill-switch {
+  background: var(--red-dim);
+  border: 1px solid var(--red);
+  color: var(--red);
+  padding: 5px 12px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 1px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.kill-switch:hover { background: var(--red); color: #fff; }
+.kill-switch.active { background: var(--red); color: #fff; box-shadow: 0 0 12px var(--red); }
+
+/* -----------------------------------------------------------------------
+   Panels
+   ----------------------------------------------------------------------- */
+
+.panel {
+  background: var(--bg-panel);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.panel-title {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 2px;
+  color: var(--text-dim);
+  padding: 10px 14px 8px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+.panel-header .panel-title { border-bottom: none; }
+
+/* -----------------------------------------------------------------------
+   Order Entry Form
+   ----------------------------------------------------------------------- */
+
+.order-entry {
+  padding: 0;
+  overflow-y: auto;
+}
+
+.order-entry .panel-title { margin-bottom: 0; }
+
+.form-row {
+  display: flex;
+  gap: 8px;
+  padding: 6px 14px;
+}
+
+.form-group {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  gap: 4px;
+}
+
+.form-group label {
+  font-size: 9px;
+  color: var(--text-dim);
+  letter-spacing: 1px;
+  font-weight: 600;
+}
+
+.form-group input,
+.form-group select {
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  color: var(--text-bright);
+  padding: 6px 8px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  outline: none;
+  transition: border-color 0.15s;
+  width: 100%;
+}
+
+.form-group input:focus,
+.form-group select:focus {
+  border-color: var(--accent);
+}
+
+.form-group input::placeholder { color: var(--text-dim); }
+
+.quote-display { flex: 0 0 auto; min-width: 90px; }
+.quote-value {
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--accent);
+  padding: 4px 0;
+}
+
+/* Side buttons */
+.btn-group { display: flex; gap: 4px; }
+
+.side-btn {
+  flex: 1;
+  padding: 6px 4px;
+  border: 1px solid var(--border);
+  background: var(--bg-input);
+  color: var(--text-dim);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 1px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.side-btn.buy.active  { background: var(--green-dim); border-color: var(--green); color: var(--green); }
+.side-btn.sell.active { background: var(--red-dim);   border-color: var(--red);   color: var(--red); }
+.side-btn.short.active{ background: #2a1a4a;          border-color: var(--purple); color: var(--purple); }
+.side-btn:hover:not(.active) { border-color: var(--border-bright); color: var(--text); }
+
+.checkbox-group label {
+  flex-direction: row;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--text);
+  cursor: pointer;
+  letter-spacing: 0;
+}
+.checkbox-group input[type="checkbox"] { width: auto; }
+
+.form-actions {
+  display: flex;
+  gap: 8px;
+  padding: 10px 14px;
+  border-top: 1px solid var(--border);
+}
+
+.btn-submit {
+  flex: 1;
+  padding: 10px;
+  background: var(--blue-dim);
+  border: 1px solid var(--blue);
+  color: var(--blue);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 2px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.btn-submit:hover { background: var(--blue); color: #fff; }
+.btn-submit.buy-mode  { background: var(--green-dim); border-color: var(--green); color: var(--green); }
+.btn-submit.buy-mode:hover { background: var(--green); color: #000; }
+.btn-submit.sell-mode { background: var(--red-dim); border-color: var(--red); color: var(--red); }
+.btn-submit.sell-mode:hover { background: var(--red); color: #fff; }
+
+.btn-cancel-all {
+  padding: 10px 14px;
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text-dim);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.btn-cancel-all:hover { border-color: var(--red); color: var(--red); }
+
+.order-message {
+  margin: 0 14px 10px;
+  padding: 8px 10px;
+  font-size: 11px;
+  display: none;
+}
+.order-message.success { background: var(--green-dim); border: 1px solid var(--green); color: var(--green); display: block; }
+.order-message.error   { background: var(--red-dim);   border: 1px solid var(--red);   color: var(--red);   display: block; }
+
+/* -----------------------------------------------------------------------
+   Blotter
+   ----------------------------------------------------------------------- */
+
+.blotter { overflow: hidden; }
+
+.blotter-filters {
+  display: flex;
+  gap: 6px;
+  padding: 6px 10px;
+}
+
+.blotter-filters input,
+.blotter-filters select {
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  color: var(--text);
+  padding: 4px 8px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  outline: none;
+}
+.blotter-filters input { width: 120px; }
+
+.table-wrapper {
+  overflow-y: auto;
+  flex: 1;
+}
+
+.blotter-table,
+.positions-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 11px;
+}
+
+.blotter-table th,
+.positions-table th {
+  position: sticky;
+  top: 0;
+  background: var(--bg);
+  color: var(--text-dim);
+  font-size: 9px;
+  letter-spacing: 1px;
+  font-weight: 600;
+  padding: 6px 8px;
+  text-align: left;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+
+.blotter-table td,
+.positions-table td {
+  padding: 5px 8px;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+  color: var(--text);
+}
+
+.blotter-table tr:hover td,
+.positions-table tr:hover td {
+  background: var(--bg-hover);
+}
+
+.empty-row td {
+  text-align: center;
+  color: var(--text-dim);
+  padding: 20px;
+}
+
+/* Status badges */
+.badge {
+  display: inline-block;
+  padding: 2px 6px;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 1px;
+  border-radius: 2px;
+}
+.badge-new            { background: var(--blue-dim);  color: var(--blue); }
+.badge-pending_new    { background: var(--blue-dim);  color: var(--blue); }
+.badge-acknowledged   { background: var(--blue-dim);  color: var(--blue); }
+.badge-partially_filled { background: #2a2a1a; color: var(--yellow); }
+.badge-filled         { background: var(--green-dim); color: var(--green); }
+.badge-cancelled      { background: #1a1a1a; color: var(--text-dim); }
+.badge-rejected       { background: var(--red-dim);   color: var(--red); }
+.badge-expired        { background: #1a1a1a; color: var(--text-dim); }
+.badge-held           { background: #2a1a4a; color: var(--purple); }
+.badge-triggered      { background: #2a2a1a; color: var(--yellow); }
+
+/* Side colors */
+.side-buy   { color: var(--green); font-weight: 700; }
+.side-sell  { color: var(--red);   font-weight: 700; }
+.side-short { color: var(--purple); font-weight: 700; }
+
+/* Cancel button in blotter */
+.btn-row-cancel {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text-dim);
+  padding: 2px 6px;
+  font-family: var(--font-mono);
+  font-size: 9px;
+  cursor: pointer;
+  transition: all 0.1s;
+}
+.btn-row-cancel:hover { border-color: var(--red); color: var(--red); }
+
+/* -----------------------------------------------------------------------
+   Positions
+   ----------------------------------------------------------------------- */
+
+.positions { overflow: hidden; }
+
+.pnl-positive { color: var(--green); }
+.pnl-negative { color: var(--red); }
+
+/* -----------------------------------------------------------------------
+   Activity Log
+   ----------------------------------------------------------------------- */
+
+.activity-log {
+  height: 120px;
+  background: var(--bg);
+  border-top: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  flex-shrink: 0;
+}
+
+.log-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 4px 12px;
+  border-bottom: 1px solid var(--border);
+  font-size: 9px;
+  color: var(--text-dim);
+  letter-spacing: 1px;
+}
+
+.btn-clear-log {
+  background: transparent;
+  border: none;
+  color: var(--text-dim);
+  font-family: var(--font-mono);
+  font-size: 9px;
+  cursor: pointer;
+}
+.btn-clear-log:hover { color: var(--text); }
+
+.log-entries {
+  flex: 1;
+  overflow-y: auto;
+  padding: 4px 12px;
+  display: flex;
+  flex-direction: column-reverse;
+}
+
+.log-entry {
+  font-size: 11px;
+  padding: 2px 0;
+  color: var(--text-dim);
+  font-family: var(--font-mono);
+}
+.log-entry .log-time { color: var(--text-dim); margin-right: 8px; }
+.log-entry.info  .log-msg { color: var(--text); }
+.log-entry.success .log-msg { color: var(--green); }
+.log-entry.error .log-msg { color: var(--red); }
+.log-entry.warn  .log-msg { color: var(--yellow); }
+
+/* -----------------------------------------------------------------------
+   Scrollbars
+   ----------------------------------------------------------------------- */
+
+::-webkit-scrollbar { width: 4px; height: 4px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--border-bright); border-radius: 2px; }
+::-webkit-scrollbar-thumb:hover { background: var(--text-dim); }
+
+/* -----------------------------------------------------------------------
+   Flash animation for new fills
+   ----------------------------------------------------------------------- */
+
+@keyframes flashGreen {
+  0%   { background: var(--green-dim); }
+  100% { background: transparent; }
+}
+@keyframes flashRed {
+  0%   { background: var(--red-dim); }
+  100% { background: transparent; }
+}
+
+.flash-fill   { animation: flashGreen 1s ease-out; }
+.flash-cancel { animation: flashRed   0.5s ease-out; }
