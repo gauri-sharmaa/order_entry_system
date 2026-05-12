@@ -500,6 +500,12 @@ func (e *Engine) ReplayWAL() error {
 		case wal.EntryNewOrder:
 			if entry.OrderIdx < e.maxOrders {
 				walDecodeOrder(entry.Data, &e.orders[entry.OrderIdx])
+				// After replay, orders that were pending are now acknowledged
+				// (they were sent to broker before the WAL write)
+				o := &e.orders[entry.OrderIdx]
+				if o.Status == StatusNew || o.Status == StatusPendingNew {
+					o.Status = StatusAcknowledged
+				}
 				if e.nextID.Load() <= entry.OrderIdx {
 					e.nextID.Store(entry.OrderIdx + 1)
 				}
@@ -530,31 +536,34 @@ func (e *Engine) InjectFill(orderIdx uint32, qty int32, price int64) {
 
 // walEncodeOrder serializes an order to bytes for the WAL (minimal, fixed-size)
 func walEncodeOrder(o *Order) []byte {
-	// Simple binary encoding — in production you'd use a proper codec
-	buf := make([]byte, 64)
-	buf[0] = byte(o.Side)
-	buf[1] = byte(o.Type)
-	buf[2] = byte(o.TIF)
-	buf[3] = byte(o.Status)
-	copy(buf[4:12], o.Symbol[:])
-	putInt32(buf[12:], o.Qty)
-	putInt64(buf[16:], o.Price)
-	putInt64(buf[24:], o.StopPrice)
-	return buf[:32]
+	buf := make([]byte, 48)
+	putInt32(buf[0:], int32(o.ID))
+	buf[4] = byte(o.Side)
+	buf[5] = byte(o.Type)
+	buf[6] = byte(o.TIF)
+	buf[7] = byte(o.Status)
+	copy(buf[8:16], o.Symbol[:])
+	putInt32(buf[16:], o.Qty)
+	putInt64(buf[20:], o.Price)
+	putInt64(buf[28:], o.StopPrice)
+	putInt64(buf[36:], o.CreatedAt)
+	return buf[:44]
 }
 
 func walDecodeOrder(data []byte, o *Order) {
-	if len(data) < 32 {
+	if len(data) < 44 {
 		return
 	}
-	o.Side = Side(data[0])
-	o.Type = OrderType(data[1])
-	o.TIF = TimeInForce(data[2])
-	o.Status = Status(data[3])
-	copy(o.Symbol[:], data[4:12])
-	o.Qty = getInt32(data[12:])
-	o.Price = getInt64(data[16:])
-	o.StopPrice = getInt64(data[24:])
+	o.ID = uint32(getInt32(data[0:]))
+	o.Side = Side(data[4])
+	o.Type = OrderType(data[5])
+	o.TIF = TimeInForce(data[6])
+	o.Status = Status(data[7])
+	copy(o.Symbol[:], data[8:16])
+	o.Qty = getInt32(data[16:])
+	o.Price = getInt64(data[20:])
+	o.StopPrice = getInt64(data[28:])
+	o.CreatedAt = getInt64(data[36:])
 }
 
 func putInt32(b []byte, v int32) {
