@@ -1,15 +1,10 @@
-// Millennium OES — Bare-metal, single-process order entry system.
+// Millennium OES — Bare-metal order entry system with investor dashboard.
 //
-// Architecture:
-//   - Single-threaded event loop on a pinned CPU core (hot path)
-//   - Lock-free ring buffer for order flow
-//   - Memory-mapped order store (pre-allocated, zero GC pressure)
-//   - Write-Ahead Log for durability (append-only, sequential I/O)
-//   - FIX 4.2 session to IBKR (persistent TCP, no reconnect per order)
-//   - Embedded HTTP server for UI (separate goroutine, off hot path)
-//
-// No cloud. No Redis. No DynamoDB. No load balancer.
-// One process. One machine. Everything in memory.
+// Modes:
+//   ./oes                          → simulation mode with web UI
+//   ./oes -headless                → CLI mode, no UI (pure engine)
+//   ./oes -broker=alpaca           → live paper trading with Alpaca
+//   ./oes -broker=fix              → institutional FIX to IBKR
 
 package main
 
@@ -23,52 +18,40 @@ import (
 	"runtime"
 	"syscall"
 
+	"github.com/millennium-oes/internal/broker/alpaca"
 	"github.com/millennium-oes/internal/engine"
 	"github.com/millennium-oes/internal/fix"
 	"github.com/millennium-oes/internal/gateway"
+	"github.com/millennium-oes/internal/risk"
+	mlsignal "github.com/millennium-oes/internal/signal"
 	"github.com/millennium-oes/internal/wal"
 )
 
 func main() {
-	// -----------------------------------------------------------------------
-	// Configuration
-	// -----------------------------------------------------------------------
 	cfg := parseFlags()
 
 	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
 	log.Printf("Millennium OES starting (pid=%d)", os.Getpid())
-	log.Printf("  CPU cores: %d | GOMAXPROCS: %d", runtime.NumCPU(), runtime.GOMAXPROCS(0))
-	log.Printf("  Hot core: %d | WAL: %s", cfg.HotCore, cfg.WALPath)
-	log.Printf("  FIX: %s→%s @ %s:%d", cfg.FIXSender, cfg.FIXTarget, cfg.FIXHost, cfg.FIXPort)
-	log.Printf("  HTTP: :%d", cfg.HTTPPort)
+	log.Printf("  Mode: %s | Broker: %s | Headless: %v", modeStr(cfg), cfg.Broker, cfg.Headless)
+	log.Printf("  CPU cores: %d | Hot core: %d", runtime.NumCPU(), cfg.HotCore)
 
-	// -----------------------------------------------------------------------
-	// Lock OS thread for the hot path — prevents Go scheduler from
-	// migrating this goroutine to another core
-	// -----------------------------------------------------------------------
 	runtime.LockOSThread()
-
-	// -----------------------------------------------------------------------
-	// Set CPU affinity — pin this process to the hot core
-	// This eliminates context switches with other processes
-	// -----------------------------------------------------------------------
 	if err := pinCPU(cfg.HotCore); err != nil {
-		log.Printf("WARNING: Could not pin CPU (non-Linux): %v", err)
-		// Non-fatal — still works, just with slightly more jitter
+		log.Printf("  CPU pin: %v (non-fatal)", err)
 	}
 
 	// -----------------------------------------------------------------------
-	// Initialize Write-Ahead Log (durability without a database)
+	// WAL
 	// -----------------------------------------------------------------------
 	walLog, err := wal.Open(cfg.WALPath)
 	if err != nil {
-		log.Fatalf("Failed to open WAL: %v", err)
+		log.Fatalf("WAL open failed: %v", err)
 	}
 	defer walLog.Close()
-	log.Printf("  WAL opened: %d entries recovered", walLog.Len())
+	log.Printf("  WAL: %d entries recovered", walLog.Len())
 
 	// -----------------------------------------------------------------------
-	// Initialize the order engine (lock-free, pre-allocated)
+	// Engine
 	// -----------------------------------------------------------------------
 	eng := engine.New(engine.Config{
 		MaxOrders:         cfg.MaxOrders,
@@ -78,52 +61,86 @@ func main() {
 		PriceDeviationPct: cfg.PriceDeviationPct,
 		WAL:               walLog,
 	})
-
-	// Replay WAL to restore state after restart
-	if err := eng.ReplayWAL(); err != nil {
-		log.Fatalf("WAL replay failed: %v", err)
-	}
+	eng.ReplayWAL()
 
 	// -----------------------------------------------------------------------
-	// Initialize FIX client (persistent TCP to IBKR)
+	// Risk Tracker (portfolio-level metrics)
 	// -----------------------------------------------------------------------
-	fixClient := fix.NewClient(fix.Config{
-		SenderCompID: cfg.FIXSender,
-		TargetCompID: cfg.FIXTarget,
-		Host:         cfg.FIXHost,
-		Port:         cfg.FIXPort,
-		Account:      cfg.FIXAccount,
-		Heartbeat:    30,
-	})
+	riskTracker := risk.NewTracker(cfg.InitialEquity)
 
+	// -----------------------------------------------------------------------
+	// ML Signal Model
+	// -----------------------------------------------------------------------
+	signalModel := mlsignal.DefaultModel()
+	_ = signalModel // available for strategy use
+
+	// -----------------------------------------------------------------------
+	// Broker
+	// -----------------------------------------------------------------------
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	if cfg.FIXHost != "" && cfg.FIXAccount != "" {
+	var alpacaClient *alpaca.Client
+
+	switch cfg.Broker {
+	case "alpaca":
+		log.Printf("  Broker: Alpaca (%s)", cfg.AlpacaBaseURL)
+		alpacaClient = alpaca.New(alpaca.Config{
+			APIKey:    cfg.AlpacaKey,
+			APISecret: cfg.AlpacaSecret,
+			BaseURL:   cfg.AlpacaBaseURL,
+			DataURL:   cfg.AlpacaDataURL,
+		})
+		alpacaClient.SetEngine(eng)
+		eng.SetBroker(alpacaClient)
+		go alpacaClient.PollFills(ctx)
+
+	case "fix":
+		log.Printf("  Broker: FIX %s→%s @ %s:%d", cfg.FIXSender, cfg.FIXTarget, cfg.FIXHost, cfg.FIXPort)
+		fixClient := fix.NewClient(fix.Config{
+			SenderCompID: cfg.FIXSender,
+			TargetCompID: cfg.FIXTarget,
+			Host:         cfg.FIXHost,
+			Port:         cfg.FIXPort,
+			Account:      cfg.FIXAccount,
+			Heartbeat:    30,
+		})
 		if err := fixClient.Connect(ctx); err != nil {
-			log.Printf("WARNING: FIX connection failed: %v (running in simulation mode)", err)
+			log.Printf("  FIX connect failed: %v (falling back to simulation)", err)
 		} else {
 			eng.SetBroker(fixClient)
 		}
-	} else {
-		log.Println("  FIX: disabled (no host/account configured) — simulation mode")
+
+	default:
+		log.Println("  Broker: simulation (no connection)")
 	}
 
 	// -----------------------------------------------------------------------
-	// Start the HTTP gateway (off the hot path, separate goroutine)
-	// -----------------------------------------------------------------------
-	gw := gateway.New(eng, cfg.HTTPPort)
-	go gw.Start()
-
-	// -----------------------------------------------------------------------
-	// Start the event loop (HOT PATH — this is where latency matters)
+	// Start engine event loop
 	// -----------------------------------------------------------------------
 	go eng.Run(ctx)
 
-	log.Printf("Millennium OES ready — http://localhost:%d", cfg.HTTPPort)
+	// -----------------------------------------------------------------------
+	// HTTP Gateway (unless headless)
+	// -----------------------------------------------------------------------
+	if !cfg.Headless {
+		gw := gateway.New(gateway.Config{
+			Engine:       eng,
+			RiskTracker:  riskTracker,
+			SignalModel:  signalModel,
+			Alpaca:       alpacaClient,
+			Port:         cfg.HTTPPort,
+		})
+		go gw.Start()
+		log.Printf("  UI: http://localhost:%d", cfg.HTTPPort)
+	} else {
+		log.Println("  UI: disabled (headless mode)")
+	}
+
+	log.Println("Millennium OES ready.")
 
 	// -----------------------------------------------------------------------
-	// Wait for shutdown signal
+	// Wait for shutdown
 	// -----------------------------------------------------------------------
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
@@ -133,7 +150,7 @@ func main() {
 	cancel()
 	eng.Stop()
 	walLog.Sync()
-	log.Println("Clean shutdown complete.")
+	log.Println("Done.")
 }
 
 // -----------------------------------------------------------------------
@@ -141,15 +158,25 @@ func main() {
 // -----------------------------------------------------------------------
 
 type Config struct {
-	// Hot path
+	Headless bool
+	Broker   string // "alpaca", "fix", "" (simulation)
+
 	HotCore   int
 	MaxOrders int
+	HTTPPort  int
 
 	// Risk
 	MaxPositionValue  float64
 	MaxOrderSize      int
 	MaxDailyLoss      float64
 	PriceDeviationPct float64
+	InitialEquity     float64
+
+	// Alpaca
+	AlpacaKey     string
+	AlpacaSecret  string
+	AlpacaBaseURL string
+	AlpacaDataURL string
 
 	// FIX
 	FIXSender  string
@@ -160,44 +187,48 @@ type Config struct {
 
 	// Storage
 	WALPath string
-
-	// HTTP
-	HTTPPort int
 }
 
 func parseFlags() Config {
 	cfg := Config{}
 
-	flag.IntVar(&cfg.HotCore, "core", 1, "CPU core to pin the hot path to")
+	flag.BoolVar(&cfg.Headless, "headless", false, "Run without web UI (CLI mode)")
+	flag.StringVar(&cfg.Broker, "broker", "", "Broker: alpaca, fix, or empty for simulation")
+	flag.IntVar(&cfg.HotCore, "core", 1, "CPU core for hot path")
 	flag.IntVar(&cfg.MaxOrders, "max-orders", 1_000_000, "Pre-allocated order slots")
+	flag.IntVar(&cfg.HTTPPort, "port", 8080, "HTTP port")
 	flag.Float64Var(&cfg.MaxPositionValue, "max-position", 1_000_000, "Max position value ($)")
 	flag.IntVar(&cfg.MaxOrderSize, "max-order-size", 10_000, "Max shares per order")
 	flag.Float64Var(&cfg.MaxDailyLoss, "max-daily-loss", 50_000, "Max daily loss ($)")
 	flag.Float64Var(&cfg.PriceDeviationPct, "max-deviation", 5.0, "Max price deviation (%)")
+	flag.Float64Var(&cfg.InitialEquity, "equity", 100_000, "Initial portfolio equity ($)")
+
+	flag.StringVar(&cfg.AlpacaKey, "alpaca-key", os.Getenv("ALPACA_API_KEY"), "Alpaca API key")
+	flag.StringVar(&cfg.AlpacaSecret, "alpaca-secret", os.Getenv("ALPACA_API_SECRET"), "Alpaca API secret")
+	flag.StringVar(&cfg.AlpacaBaseURL, "alpaca-url", "https://paper-api.alpaca.markets", "Alpaca base URL")
+	flag.StringVar(&cfg.AlpacaDataURL, "alpaca-data-url", "https://data.alpaca.markets", "Alpaca data URL")
+
 	flag.StringVar(&cfg.FIXSender, "fix-sender", "MILLENNIUM", "FIX SenderCompID")
 	flag.StringVar(&cfg.FIXTarget, "fix-target", "IBFX", "FIX TargetCompID")
-	flag.StringVar(&cfg.FIXHost, "fix-host", "", "FIX gateway host (empty=simulation)")
-	flag.IntVar(&cfg.FIXPort, "fix-port", 4002, "FIX gateway port")
-	flag.StringVar(&cfg.FIXAccount, "fix-account", "", "Broker account ID")
-	flag.StringVar(&cfg.WALPath, "wal", "./data/orders.wal", "Write-ahead log path")
-	flag.IntVar(&cfg.HTTPPort, "port", 8080, "HTTP server port")
+	flag.StringVar(&cfg.FIXHost, "fix-host", "", "FIX host")
+	flag.IntVar(&cfg.FIXPort, "fix-port", 4002, "FIX port")
+	flag.StringVar(&cfg.FIXAccount, "fix-account", "", "FIX account")
+	flag.StringVar(&cfg.WALPath, "wal", "./data/orders.wal", "WAL path")
 
 	flag.Parse()
 	return cfg
 }
 
-// -----------------------------------------------------------------------
-// CPU pinning (Linux-only via sched_setaffinity; no-op on macOS)
-// -----------------------------------------------------------------------
+func modeStr(cfg Config) string {
+	if cfg.Headless {
+		return "headless"
+	}
+	return "ui"
+}
 
 func pinCPU(core int) error {
 	if runtime.GOOS != "linux" {
-		return fmt.Errorf("CPU pinning only supported on Linux (current: %s)", runtime.GOOS)
+		return fmt.Errorf("CPU pinning requires Linux (current: %s)", runtime.GOOS)
 	}
-	// On Linux, this would use sched_setaffinity via unix package.
-	// For portability, we just lock the OS thread (done in main).
-	// In production on bare metal Linux, you'd use:
-	//   unix.SchedSetaffinity(0, &unix.CPUSet{})
-	// or launch with: taskset -c <core> ./millennium-oes
 	return nil
 }
