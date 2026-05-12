@@ -102,12 +102,12 @@ func main() {
 	if cfg.FIXHost != "" && cfg.FIXAccount != "" {
 		if err := fixClient.Connect(ctx); err != nil {
 			log.Printf("WARNING: FIX connection failed: %v (running in simulation mode)", err)
+		} else {
+			eng.SetBroker(fixClient)
 		}
 	} else {
 		log.Println("  FIX: disabled (no host/account configured) — simulation mode")
 	}
-
-	eng.SetBroker(fixClient)
 
 	// -----------------------------------------------------------------------
 	// Start the HTTP gateway (off the hot path, separate goroutine)

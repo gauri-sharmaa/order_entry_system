@@ -23,6 +23,7 @@ import (
 	"fmt"
 	"log"
 	"runtime"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -74,7 +75,9 @@ type Engine struct {
 	wal *wal.Log
 
 	// Subscribers for real-time updates (off hot path)
-	updates chan OrderUpdate
+	subsMu  sync.RWMutex
+	subs    map[uint64]chan OrderUpdate
+	subSeq  atomic.Uint64
 
 	// Stats
 	ordersProcessed atomic.Uint64
@@ -105,7 +108,7 @@ func New(cfg Config) *Engine {
 		maxDailyLoss:      PriceToMicros(cfg.MaxDailyLoss),
 		priceDeviationPct: int64(cfg.PriceDeviationPct * 100), // to basis points
 		wal:               cfg.WAL,
-		updates:           make(chan OrderUpdate, 4096),
+		subs:              make(map[uint64]chan OrderUpdate),
 	}
 	// Reserve slot 0 as "null"
 	e.nextID.Store(1)
@@ -173,8 +176,25 @@ func (e *Engine) ListActive() []uint32 {
 	return result
 }
 
-// Updates returns the channel for SSE streaming
-func (e *Engine) Updates() <-chan OrderUpdate { return e.updates }
+// Subscribe returns a channel that receives order updates. Call Unsubscribe when done.
+func (e *Engine) Subscribe() (uint64, <-chan OrderUpdate) {
+	id := e.subSeq.Add(1)
+	ch := make(chan OrderUpdate, 256)
+	e.subsMu.Lock()
+	e.subs[id] = ch
+	e.subsMu.Unlock()
+	return id, ch
+}
+
+// Unsubscribe removes a subscriber
+func (e *Engine) Unsubscribe(id uint64) {
+	e.subsMu.Lock()
+	if ch, ok := e.subs[id]; ok {
+		close(ch)
+		delete(e.subs, id)
+	}
+	e.subsMu.Unlock()
+}
 
 // Stats returns engine statistics
 func (e *Engine) Stats() (processed uint64, avgLatencyNs uint64) {
@@ -445,10 +465,15 @@ func (e *Engine) processFill(ev Event) {
 // -----------------------------------------------------------------------
 
 func (e *Engine) notify(idx uint32, status Status) {
-	select {
-	case e.updates <- OrderUpdate{Idx: idx, Status: status}:
-	default: // don't block hot path if subscriber is slow
+	update := OrderUpdate{Idx: idx, Status: status}
+	e.subsMu.RLock()
+	for _, ch := range e.subs {
+		select {
+		case ch <- update:
+		default: // don't block hot path if subscriber is slow
+		}
 	}
+	e.subsMu.RUnlock()
 }
 
 // hashSymbol maps a symbol to a position array index (simple FNV-like hash)

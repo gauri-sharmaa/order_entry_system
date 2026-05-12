@@ -177,10 +177,9 @@ func (g *Gateway) toggleKillSwitch(w http.ResponseWriter, r *http.Request) {
 func (g *Gateway) getStats(w http.ResponseWriter, r *http.Request) {
 	processed, avgLatency := g.eng.Stats()
 	writeJSON(w, 200, map[string]interface{}{
-		"orders_processed":    processed,
-		"avg_latency_ns":     avgLatency,
-		"avg_latency_us":     float64(avgLatency) / 1000.0,
-		"ring_buffer_depth":  g.eng.Updates(),
+		"orders_processed": processed,
+		"avg_latency_ns":   avgLatency,
+		"avg_latency_us":   float64(avgLatency) / 1000.0,
 	})
 }
 
@@ -199,7 +198,9 @@ func (g *Gateway) stream(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintf(w, "event: connected\ndata: {}\n\n")
 	flusher.Flush()
 
-	updates := g.eng.Updates()
+	subID, updates := g.eng.Subscribe()
+	defer g.eng.Unsubscribe(subID)
+
 	ctx := r.Context()
 
 	for {
