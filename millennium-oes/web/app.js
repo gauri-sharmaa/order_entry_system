@@ -17,8 +17,18 @@ document.addEventListener('DOMContentLoaded', () => {
   loadDashboard();
   connectSSE();
   onOrderTypeChange();
+  fetchQuote();
   setInterval(loadDashboard, 5000);
+  setInterval(fetchQuote, 5000); // refresh quote every 5s
+
+  // Also fetch quote on input (not just blur)
+  document.getElementById('symbol').addEventListener('input', debounce(fetchQuote, 500));
 });
+
+function debounce(fn, ms) {
+  let timer;
+  return function() { clearTimeout(timer); timer = setTimeout(fn, ms); };
+}
 
 // -----------------------------------------------------------------------
 // Dashboard data (account, positions, risk, strategies, stats)
@@ -215,11 +225,16 @@ async function loadOrders() {
 
 async function fetchQuote() {
   const symbol = document.getElementById('symbol').value.trim().toUpperCase();
-  if (!symbol) return;
+  if (!symbol) { document.getElementById('quotePrice').textContent = '—'; return; }
   try {
     const res = await fetch(`${API}/api/quote/${symbol}`);
+    if (!res.ok) { document.getElementById('quotePrice').textContent = '—'; return; }
     const data = await res.json();
-    if (data.price) document.getElementById('quotePrice').textContent = '$' + data.price.toFixed(2);
+    if (data && data.price && data.price > 0) {
+      document.getElementById('quotePrice').textContent = '$' + data.price.toFixed(2);
+    } else {
+      document.getElementById('quotePrice').textContent = '—';
+    }
   } catch (e) {
     document.getElementById('quotePrice').textContent = '—';
   }
