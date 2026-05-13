@@ -73,11 +73,12 @@ func (c *Client) SetEngine(eng *engine.Engine) { c.eng = eng }
 // Submit sends an order to Alpaca
 func (c *Client) Submit(o *engine.Order) error {
 	payload := map[string]interface{}{
-		"symbol":        engine.SymbolToString(o.Symbol),
-		"side":          alpacaSide(o.Side),
-		"type":          alpacaOrdType(o.Type),
-		"time_in_force": alpacaTIF(o.TIF),
-		"qty":           strconv.Itoa(int(o.Qty)),
+		"symbol":         engine.SymbolToString(o.Symbol),
+		"side":           alpacaSide(o.Side),
+		"type":           alpacaOrdType(o.Type),
+		"time_in_force":  alpacaTIF(o.TIF),
+		"qty":            strconv.Itoa(int(o.Qty)),
+		"extended_hours": true,
 	}
 
 	if o.Price > 0 {
