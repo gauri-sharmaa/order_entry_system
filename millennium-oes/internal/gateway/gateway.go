@@ -100,10 +100,90 @@ func (g *Gateway) Start() {
 		WriteTimeout: 30 * time.Second,
 	}
 
+	// Background: feed risk tracker from Alpaca positions
+	go g.riskFeedLoop()
+
+	// Background: listen for fills and record trades in risk tracker
+	go g.fillListener()
+
 	log.Printf("[HTTP] Listening on %s", addr)
 	if err := srv.ListenAndServe(); err != nil {
 		log.Fatalf("[HTTP] %v", err)
 	}
+}
+
+// fillListener subscribes to engine updates and records fills in the risk tracker
+func (g *Gateway) fillListener() {
+	if g.risk == nil {
+		return
+	}
+	subID, ch := g.eng.Subscribe()
+	defer g.eng.Unsubscribe(subID)
+
+	for update := range ch {
+		if update.Status == engine.StatusFilled || update.Status == engine.StatusPartialFill {
+			o, ok := g.eng.GetOrder(update.Idx)
+			if !ok {
+				continue
+			}
+			// Record trade P&L (simplified: use fill price vs a reference)
+			// For now just record that a trade happened
+			fillValue := engine.MicrosToPrice(o.FilledAvgPx) * float64(o.FilledQty)
+			pnl := 0.0 // real P&L requires tracking entry vs exit — simplified
+			g.risk.RecordTrade(pnl)
+
+			// Update position in risk tracker
+			symbol := engine.SymbolToString(o.Symbol)
+			if o.Side == engine.SideBuy || o.Side == engine.SideCover {
+				g.risk.UpdatePosition(symbol, fillValue)
+			} else {
+				g.risk.UpdatePosition(symbol, -fillValue)
+			}
+
+			// Record in strategy manager
+			if g.strategies != nil {
+				stratID := engine.SymbolToString(o.StrategyID)
+				if stratID != "" {
+					g.strategies.RecordFill(stratID, symbol, o.Side, o.FilledQty, pnl)
+				}
+			}
+		}
+	}
+}
+
+// riskFeedLoop polls Alpaca positions and account every 5s to feed the risk tracker
+func (g *Gateway) riskFeedLoop() {
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+
+	for range ticker.C {
+		if g.alpaca == nil || g.risk == nil {
+			continue
+		}
+
+		// Update equity from account
+		acct, err := g.alpaca.GetAccount()
+		if err == nil {
+			equity := parseFloat(acct.Equity)
+			if equity > 0 {
+				g.risk.UpdateEquity(equity)
+			}
+		}
+
+		// Update positions
+		positions, err := g.alpaca.GetPositions()
+		if err == nil {
+			for _, p := range positions {
+				mktVal := parseFloat(p.MarketValue)
+				g.risk.UpdatePosition(p.Symbol, mktVal)
+			}
+		}
+	}
+}
+
+func parseFloat(s string) float64 {
+	v, _ := strconv.ParseFloat(s, 64)
+	return v
 }
 
 // -----------------------------------------------------------------------
