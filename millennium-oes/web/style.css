@@ -470,3 +470,36 @@ html, body { height: 100%; background: var(--bg); color: var(--text); font-famil
 
 .flash-fill   { animation: flashGreen 1s ease-out; }
 .flash-cancel { animation: flashRed   0.5s ease-out; }
+
+
+/* -----------------------------------------------------------------------
+   Risk Grid
+   ----------------------------------------------------------------------- */
+
+.risk-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 2px;
+  padding: 6px 10px;
+}
+
+.risk-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 3px 6px;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+}
+
+.risk-label {
+  font-size: 8px;
+  color: var(--text-dim);
+  letter-spacing: 1px;
+}
+
+.risk-val {
+  font-size: 11px;
+  color: var(--text-bright);
+  font-weight: 600;
+}

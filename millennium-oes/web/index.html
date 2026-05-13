@@ -17,20 +17,24 @@
       </div>
       <div class="header-right">
         <div class="account-stat">
-          <span class="stat-label">PROCESSED</span>
-          <span class="stat-value" id="equity">—</span>
+          <span class="stat-label">EQUITY</span>
+          <span class="stat-value" id="hdrEquity">—</span>
         </div>
         <div class="account-stat">
-          <span class="stat-label">AVG LATENCY</span>
-          <span class="stat-value" id="cash">—</span>
+          <span class="stat-label">CASH</span>
+          <span class="stat-value" id="hdrCash">—</span>
         </div>
         <div class="account-stat">
-          <span class="stat-label">RING BUFFER</span>
-          <span class="stat-value" id="buyingPower">—</span>
+          <span class="stat-label">BUYING POWER</span>
+          <span class="stat-value" id="hdrBP">—</span>
         </div>
         <div class="account-stat">
-          <span class="stat-label">ENGINE</span>
-          <span class="stat-value" id="dailyPnl">—</span>
+          <span class="stat-label">DAY P&L</span>
+          <span class="stat-value" id="hdrPnl">—</span>
+        </div>
+        <div class="account-stat">
+          <span class="stat-label">LATENCY</span>
+          <span class="stat-value" id="hdrLatency">—</span>
         </div>
         <button class="kill-switch" id="killSwitchBtn" onclick="toggleKillSwitch()">
           ⚡ KILL SWITCH
@@ -194,6 +198,12 @@
               Extended Hours
             </label>
           </div>
+          <div class="form-group">
+            <label>STRATEGY</label>
+            <select id="strategySelect">
+              <option value="">None</option>
+            </select>
+          </div>
         </div>
 
         <div class="form-actions">
@@ -252,10 +262,10 @@
         </div>
       </section>
 
-      <!-- Right: Positions -->
+      <!-- Right: Portfolio & Risk -->
       <section class="panel positions">
         <h2 class="panel-title">POSITIONS</h2>
-        <div class="table-wrapper">
+        <div class="table-wrapper" style="max-height:180px">
           <table class="positions-table">
             <thead>
               <tr>
@@ -263,14 +273,38 @@
                 <th>QTY</th>
                 <th>ENTRY</th>
                 <th>PRICE</th>
-                <th>MKT VAL</th>
                 <th>P&L</th>
               </tr>
             </thead>
             <tbody id="positionsBody">
-              <tr class="empty-row">
-                <td colspan="6">No positions</td>
+              <tr class="empty-row"><td colspan="5">No positions</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h2 class="panel-title" style="margin-top:4px">RISK METRICS</h2>
+        <div class="risk-grid" id="riskGrid">
+          <div class="risk-item"><span class="risk-label">SHARPE</span><span class="risk-val" id="rSharpe">—</span></div>
+          <div class="risk-item"><span class="risk-label">DRAWDOWN</span><span class="risk-val" id="rDD">—</span></div>
+          <div class="risk-item"><span class="risk-label">VAR 95%</span><span class="risk-val" id="rVaR">—</span></div>
+          <div class="risk-item"><span class="risk-label">WIN RATE</span><span class="risk-val" id="rWin">—</span></div>
+          <div class="risk-item"><span class="risk-label">TRADES</span><span class="risk-val" id="rTrades">—</span></div>
+          <div class="risk-item"><span class="risk-label">CONCEN.</span><span class="risk-val" id="rConc">—</span></div>
+        </div>
+
+        <h2 class="panel-title" style="margin-top:4px">STRATEGIES</h2>
+        <div class="table-wrapper" style="max-height:150px">
+          <table class="positions-table">
+            <thead>
+              <tr>
+                <th>ID</th>
+                <th>ORDERS</th>
+                <th>FILLS</th>
+                <th>P&L</th>
               </tr>
+            </thead>
+            <tbody id="strategiesBody">
+              <tr class="empty-row"><td colspan="4">No strategies</td></tr>
             </tbody>
           </table>
         </div>
