@@ -37,6 +37,9 @@ type Client struct {
 	idMap   map[uint32]string // our ID → alpaca ID
 	revMap  map[string]uint32 // alpaca ID → our ID
 
+	// Track which fills we've already processed (prevent duplicates)
+	filled  map[string]bool // alpaca order ID → already injected
+
 	eng *engine.Engine
 }
 
@@ -61,6 +64,7 @@ func New(cfg Config) *Client {
 		},
 		idMap:  make(map[uint32]string, 1024),
 		revMap: make(map[string]uint32, 1024),
+		filled: make(map[string]bool, 1024),
 	}
 }
 
@@ -249,9 +253,10 @@ func (c *Client) checkFills() {
 	for _, ao := range orders {
 		c.mu.RLock()
 		ourID, found := c.revMap[ao.ID]
+		alreadyFilled := c.filled[ao.ID]
 		c.mu.RUnlock()
 
-		if !found || c.eng == nil {
+		if !found || c.eng == nil || alreadyFilled {
 			continue
 		}
 
@@ -260,6 +265,9 @@ func (c *Client) checkFills() {
 
 		if qty > 0 && px > 0 {
 			c.eng.InjectFill(ourID, int32(qty), engine.PriceToMicros(px))
+			c.mu.Lock()
+			c.filled[ao.ID] = true
+			c.mu.Unlock()
 		}
 	}
 }
