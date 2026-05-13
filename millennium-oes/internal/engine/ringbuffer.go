@@ -47,6 +47,7 @@ type Event struct {
 	Timestamp int64   // unix nanoseconds
 	// Inline payload — no heap allocation
 	Symbol    [8]byte // ticker symbol, null-padded
+	Strategy  [8]byte // strategy ID, null-padded
 	Side      Side
 	OrdType   OrderType
 	TIF       TimeInForce

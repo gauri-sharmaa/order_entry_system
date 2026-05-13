@@ -24,6 +24,7 @@ import (
 	"github.com/millennium-oes/internal/gateway"
 	"github.com/millennium-oes/internal/risk"
 	mlsignal "github.com/millennium-oes/internal/signal"
+	"github.com/millennium-oes/internal/strategy"
 	"github.com/millennium-oes/internal/wal"
 )
 
@@ -67,6 +68,11 @@ func main() {
 	// Risk Tracker (portfolio-level metrics)
 	// -----------------------------------------------------------------------
 	riskTracker := risk.NewTracker(cfg.InitialEquity)
+
+	// -----------------------------------------------------------------------
+	// Strategy Manager (multi-strategy support)
+	// -----------------------------------------------------------------------
+	stratMgr := strategy.NewManager()
 
 	// -----------------------------------------------------------------------
 	// ML Signal Model
@@ -128,6 +134,7 @@ func main() {
 			Engine:       eng,
 			RiskTracker:  riskTracker,
 			SignalModel:  signalModel,
+			Strategies:   stratMgr,
 			Alpaca:       alpacaClient,
 			Port:         cfg.HTTPPort,
 		})

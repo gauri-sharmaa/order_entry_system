@@ -16,6 +16,7 @@ import (
 	"github.com/millennium-oes/internal/engine"
 	"github.com/millennium-oes/internal/risk"
 	"github.com/millennium-oes/internal/signal"
+	"github.com/millennium-oes/internal/strategy"
 )
 
 // Config for the gateway
@@ -23,27 +24,30 @@ type Config struct {
 	Engine      *engine.Engine
 	RiskTracker *risk.Tracker
 	SignalModel *signal.Model
+	Strategies  *strategy.Manager
 	Alpaca      *alpaca.Client // nil if not using Alpaca
 	Port        int
 }
 
 // Gateway is the HTTP server
 type Gateway struct {
-	eng    *engine.Engine
-	risk   *risk.Tracker
-	signal *signal.Model
-	alpaca *alpaca.Client
-	port   int
+	eng        *engine.Engine
+	risk       *risk.Tracker
+	signal     *signal.Model
+	strategies *strategy.Manager
+	alpaca     *alpaca.Client
+	port       int
 }
 
 // New creates a gateway
 func New(cfg Config) *Gateway {
 	return &Gateway{
-		eng:    cfg.Engine,
-		risk:   cfg.RiskTracker,
-		signal: cfg.SignalModel,
-		alpaca: cfg.Alpaca,
-		port:   cfg.Port,
+		eng:        cfg.Engine,
+		risk:       cfg.RiskTracker,
+		signal:     cfg.SignalModel,
+		strategies: cfg.Strategies,
+		alpaca:     cfg.Alpaca,
+		port:       cfg.Port,
 	}
 }
 
@@ -74,6 +78,14 @@ func (g *Gateway) Start() {
 	mux.HandleFunc("GET /api/stats", g.getStats)
 	mux.HandleFunc("POST /api/risk/killswitch", g.toggleKillSwitch)
 	mux.HandleFunc("GET /api/stream", g.stream)
+
+	// -----------------------------------------------------------------------
+	// Strategy Management
+	// -----------------------------------------------------------------------
+	mux.HandleFunc("GET /api/strategies", g.listStrategies)
+	mux.HandleFunc("POST /api/strategies", g.createStrategy)
+	mux.HandleFunc("GET /api/strategies/{id}", g.getStrategy)
+	mux.HandleFunc("DELETE /api/strategies/{id}", g.deleteStrategy)
 
 	// -----------------------------------------------------------------------
 	// Static files (serves both views)
@@ -109,6 +121,7 @@ func (g *Gateway) submitOrder(w http.ResponseWriter, r *http.Request) {
 		TIF       string  `json:"time_in_force"`
 		TrailType string  `json:"trail_type,omitempty"`
 		TrailVal  float64 `json:"trail_value,omitempty"`
+		Strategy  string  `json:"strategy,omitempty"`
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -120,8 +133,17 @@ func (g *Gateway) submitOrder(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Per-strategy risk check
+	if req.Strategy != "" && g.strategies != nil {
+		if err := g.strategies.CheckRisk(req.Strategy, req.Qty, req.Price); err != nil {
+			writeErr(w, 403, err.Error())
+			return
+		}
+	}
+
 	ev := engine.Event{
 		Symbol:    engine.SymbolFromString(req.Symbol),
+		Strategy:  engine.SymbolFromString(req.Strategy),
 		Side:      parseSide(req.Side),
 		OrdType:   parseOrdType(req.Type),
 		TIF:       parseTIF(req.TIF),
@@ -136,6 +158,11 @@ func (g *Gateway) submitOrder(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeErr(w, 403, err.Error())
 		return
+	}
+
+	// Track order in strategy
+	if req.Strategy != "" && g.strategies != nil {
+		g.strategies.RecordOrder(req.Strategy)
 	}
 
 	writeJSON(w, 201, map[string]interface{}{"id": idx, "status": "submitted"})
@@ -347,11 +374,86 @@ func (g *Gateway) stream(w http.ResponseWriter, r *http.Request) {
 }
 
 // -----------------------------------------------------------------------
+// Strategy handlers
+// -----------------------------------------------------------------------
+
+func (g *Gateway) listStrategies(w http.ResponseWriter, r *http.Request) {
+	if g.strategies == nil {
+		writeJSON(w, 200, []interface{}{})
+		return
+	}
+	writeJSON(w, 200, g.strategies.List())
+}
+
+func (g *Gateway) createStrategy(w http.ResponseWriter, r *http.Request) {
+	if g.strategies == nil {
+		writeErr(w, 500, "strategy manager not initialized")
+		return
+	}
+
+	var req struct {
+		ID               string  `json:"id"`
+		Name             string  `json:"name"`
+		Description      string  `json:"description"`
+		MaxPositionValue float64 `json:"max_position_value"`
+		MaxOrderSize     int     `json:"max_order_size"`
+		MaxDailyLoss     float64 `json:"max_daily_loss"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErr(w, 400, "invalid request: "+err.Error())
+		return
+	}
+
+	s := strategy.Strategy{
+		ID:               req.ID,
+		Name:             req.Name,
+		Description:      req.Description,
+		MaxPositionValue: req.MaxPositionValue,
+		MaxOrderSize:     req.MaxOrderSize,
+		MaxDailyLoss:     req.MaxDailyLoss,
+	}
+
+	if err := g.strategies.Register(s); err != nil {
+		writeErr(w, 400, err.Error())
+		return
+	}
+
+	writeJSON(w, 201, map[string]string{"id": req.ID, "status": "registered"})
+}
+
+func (g *Gateway) getStrategy(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if g.strategies == nil {
+		writeErr(w, 404, "not found")
+		return
+	}
+	s, ok := g.strategies.Get(id)
+	if !ok {
+		writeErr(w, 404, "strategy not found")
+		return
+	}
+	writeJSON(w, 200, s)
+}
+
+func (g *Gateway) deleteStrategy(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if g.strategies == nil {
+		writeErr(w, 404, "not found")
+		return
+	}
+	if err := g.strategies.Remove(id); err != nil {
+		writeErr(w, 400, err.Error())
+		return
+	}
+	writeJSON(w, 200, map[string]string{"status": "deactivated"})
+}
+
+// -----------------------------------------------------------------------
 // Helpers
 // -----------------------------------------------------------------------
 
 func orderToJSON(o engine.Order) map[string]interface{} {
-	return map[string]interface{}{
+	m := map[string]interface{}{
 		"id":            o.ID,
 		"symbol":        engine.SymbolToString(o.Symbol),
 		"side":          sideStr(o.Side),
@@ -365,6 +467,11 @@ func orderToJSON(o engine.Order) map[string]interface{} {
 		"status":        statusStr(o.Status),
 		"created_at":    time.Unix(0, o.CreatedAt).Format(time.RFC3339Nano),
 	}
+	strat := engine.SymbolToString(o.StrategyID)
+	if strat != "" {
+		m["strategy"] = strat
+	}
+	return m
 }
 
 func syntheticPrices(current float64, n int) []float64 {

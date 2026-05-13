@@ -38,6 +38,9 @@ type Order struct {
 	ClientID      [16]byte // client-assigned ID
 	BrokerID      [16]byte // broker-assigned ID (from FIX tag 37)
 
+	// Strategy (8 bytes)
+	StrategyID    [8]byte  // which strategy placed this order
+
 	// Instrument (16 bytes)
 	Symbol        [8]byte
 	Exchange      [8]byte  // "SMART", "NYSE", "NASDAQ"

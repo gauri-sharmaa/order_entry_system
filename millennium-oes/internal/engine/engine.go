@@ -284,6 +284,7 @@ func (e *Engine) processSubmit(ev Event) {
 	// Build order from event
 	o.ID = idx
 	o.Symbol = ev.Symbol
+	o.StrategyID = ev.Strategy
 	o.Side = ev.Side
 	o.Type = ev.OrdType
 	o.TIF = ev.TIF
