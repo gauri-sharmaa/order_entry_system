@@ -345,6 +345,7 @@ func (e *Engine) processSubmit(ev Event) {
 			e.notify(idx, StatusRejected)
 			return
 		}
+		o.Status = StatusAcknowledged
 	} else {
 		// Simulation mode — immediately acknowledge
 		o.Status = StatusAcknowledged
