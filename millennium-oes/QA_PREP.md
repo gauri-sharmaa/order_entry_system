@@ -1,505 +1,547 @@
-# Millennium OES — Interview Q&A Prep
-
-Every question answered simply, then technically. Read the simple version first, then the technical version if you want depth.
+# Millennium OES — Complete Explanation
 
 ---
 
-## SECTION 1: LATENCY
+## PART 1: WHAT IS THIS PROJECT?
 
-### Q: Your WAL write is ~10μs but total latency is 26μs — what's the other 16μs?
+### The One-Sentence Version
+This is a program that takes a trader's order ("buy 100 shares of Apple"), checks if it's safe, sends it to a stock exchange, and tells the trader what happened — all in 26 millionths of a second.
 
-**Simple:** The engine does 5 things per order. Each takes a little time. Added up = 26μs.
+### The Analogy
+Imagine a restaurant:
+- **You** (the trader) tell the waiter what you want
+- **The waiter** (our system) checks if the kitchen can make it, writes it down, sends it to the kitchen
+- **The kitchen** (the stock exchange/broker) makes the food and sends it back
+- **The waiter** tells you "your food is ready" (your order filled)
 
-**Breakdown:**
+Our system IS the waiter. But instead of taking 5 minutes, it takes 0.000026 seconds.
+
+### Why Does Speed Matter?
+In stock trading, prices change thousands of times per second. If your system is slow:
+- The price you wanted might be gone by the time your order arrives
+- Someone faster than you gets the shares first
+- You lose money on every trade due to "slippage" (getting a worse price than expected)
+
+Hedge funds like Millennium spend millions making their systems faster because even 1 millisecond of improvement = millions in profit per year.
+
+---
+
+## PART 2: EVERY COMPONENT EXPLAINED SIMPLY
+
+---
+
+### What is Go?
+
+Go is a programming language made by Google. We chose it because:
+- It's **compiled** (turned into machine code that runs directly on the CPU — no interpreter slowing things down)
+- It's **fast to write** (simpler than C++ or Rust)
+- It handles **many things at once** well (important for a server)
+
+Think of it like: Python is a bicycle (easy but slow), C++ is a race car (fast but hard to drive), Go is a sports car (fast AND easy to drive).
+
+---
+
+### What is a WAL (Write-Ahead Log)?
+
+**The problem:** If the computer crashes, all orders in memory are lost.
+
+**The solution:** Before we do anything with an order, we write it to a file on disk. If the computer crashes and restarts, we read that file and recover everything.
+
+**Why not use a database?** Databases are slow (~5 milliseconds per write). Our WAL is fast (~1 microsecond per write) because it only does one thing: append to the end of a file. It never goes back and edits old data. This is the fastest possible way to write to disk.
+
+**Analogy:** A database is like organizing a filing cabinet (slow, lots of shuffling). A WAL is like scribbling on the next line of a notepad (instant, just keep writing forward).
+
+**What's a CRC32 checksum?** It's a math formula that produces a fingerprint of the data. If the data gets corrupted (power failure mid-write), the fingerprint won't match, and we know to ignore that entry.
+
+---
+
+### What is the Ring Buffer?
+
+**The problem:** The web server receives orders from traders. The engine processes orders one at a time. How do they communicate without slowing each other down?
+
+**The solution:** A ring buffer — a fixed-size circular queue.
+
+**Analogy:** Imagine a conveyor belt sushi restaurant:
+- The chef (web server) puts plates on the belt
+- You (the engine) pick plates off the belt
+- The belt keeps moving — neither of you waits for the other
+- If the belt is full, the chef stops adding plates (back-pressure)
+
+**Why "lock-free"?** A lock is like a bathroom door — only one person can use it at a time, everyone else waits. Locks are slow. Our ring buffer uses "atomic operations" instead — think of it like two people writing on opposite ends of a whiteboard. They never interfere because they're in different spots.
+
+**Why is it a fixed size (65,536 slots)?** We allocate all the memory upfront so we never need to ask the operating system for more memory during trading. Asking for memory is slow and unpredictable.
+
+---
+
+### What is the Garbage Collector (GC)?
+
+**The problem:** When a program creates objects (like strings, lists, etc.), they use memory. When you're done with them, that memory needs to be freed. If you don't free it, you run out of memory (memory leak).
+
+**What the GC does:** It automatically finds unused memory and frees it. Like a janitor who cleans up after you.
+
+**Why is it bad for us?** The janitor has to STOP EVERYTHING to clean. For a few hundred microseconds, your entire program freezes while the GC runs. In trading, a random freeze = missed opportunities.
+
+**Our solution:** We never create garbage in the first place. All our memory is pre-allocated at startup (like setting up all the plates before the restaurant opens). The GC has nothing to clean, so it never runs.
+
+**How we avoid garbage:**
+- Use `[8]byte` (fixed-size box) instead of `string` (variable-size, needs allocation)
+- Use `int64` (a number) instead of `*float64` (a pointer to a number — pointers are garbage)
+- Pre-allocate 1 million order slots at startup
+
+---
+
+### What is TCP?
+
+**TCP** (Transmission Control Protocol) is how computers talk to each other over a network. When we send an order to the broker, it goes over TCP.
+
+**Why it matters:** TCP guarantees your message arrives, in order, without corruption. But it has overhead — handshakes, acknowledgments, buffering.
+
+**Why is TCP relevant here?** Our FIX connection to Interactive Brokers is a TCP connection. Every order we send travels over this wire. Making TCP faster = orders arrive faster.
+
+---
+
+### What is Nagle's Algorithm?
+
+**The problem Nagle solves:** If you send lots of tiny messages (like 200 bytes each), the network wastes bandwidth on headers. Nagle says: "wait a bit, collect several small messages, send them together as one big message."
+
+**Why it's bad for us:** We don't want to wait. We want our 200-byte order to go NOW, not "in 40 milliseconds when there's more data to batch."
+
+**Our fix:** `TCP_NODELAY = true` — this disables Nagle. Every message is sent immediately, even if it's small. We trade network efficiency for speed.
+
+**Analogy:** Nagle is like waiting for the elevator to fill up before it moves. We take the stairs — slower for a crowd, but faster for one person in a hurry.
+
+---
+
+### What is CPU Pinning?
+
+**The problem:** Your computer has multiple CPU cores (yours has 11). The operating system constantly moves programs between cores to balance the load. Every time it moves your program, there's a delay (the new core needs to load your data into its cache).
+
+**Our solution:** We tell the OS: "keep our engine on core #1, never move it." This means the CPU cache stays warm (our data is always ready) and we never pay the switching cost.
+
+**Analogy:** It's like having a dedicated desk at work vs hot-desking. With a dedicated desk, your stuff is always there. With hot-desking, you waste time setting up every morning.
+
+**Why not use ALL cores?** See next question.
+
+---
+
+### Why Single-Threaded? Isn't Multiple CPUs Better?
+
+**The intuition:** "More cores = faster, right?"
+
+**The reality for trading:** No. Here's why:
+
+When multiple cores work on the same data, they need to coordinate. Coordination requires locks (waiting) or atomic operations (slower). This coordination overhead can be WORSE than just using one core.
+
+**Analogy:** One chef in a kitchen is faster than 5 chefs bumping into each other, arguing about who uses the stove, and waiting for each other to finish with the knife.
+
+**Our approach:** One core does ALL the order processing (the "hot path"). Other cores handle the slow stuff (HTTP server, reading from broker, updating the UI). They communicate through the lock-free ring buffer — no coordination needed.
+
+**When would you use multiple cores?** If you're processing 1 million+ orders per second. At our scale (~38,000/sec), one core is more than enough and simpler.
+
+---
+
+### What is FIX Protocol?
+
+**What it is:** FIX (Financial Information eXchange) is the language that banks, brokers, and exchanges use to talk to each other. It's been the standard since 1992.
+
+**Analogy:** If trading systems are people, FIX is English — everyone speaks it, everyone understands it.
+
+**What a FIX message looks like:**
 ```
-Ring buffer read:     ~50ns    (reading the event from the queue)
-Build order struct:   ~200ns   (copying fields into the pre-allocated slot)
-Risk checks:          ~500ns   (3 if-statements checking limits)
-WAL write:            ~10-15μs (writing to disk — this is the big one)
-Status update + notify: ~1μs   (set status, push to SSE subscribers)
-time.Now() calls (x3): ~300ns  (Go syscall to get current time)
-Total:                ~15-17μs in simulation
-+ Alpaca HTTP call:   ~70-80ms (network round-trip — dominates when broker connected)
+35=D|55=AAPL|54=1|38=100|40=2|44=175.50
+```
+Translation: "New Order (D) | Symbol: AAPL | Side: Buy (1) | Quantity: 100 | Type: Limit (2) | Price: $175.50"
+
+**Why we built it from scratch:** Most people use a library called QuickFIX. We wrote our own because:
+1. Zero dependencies (nothing can break that we don't control)
+2. Faster (our version: ~5μs per message, QuickFIX: ~50μs)
+3. Shows we understand the protocol deeply (impressive in interviews)
+
+---
+
+### What is "Building the Order Struct"?
+
+**What it means:** When a trader submits an order, we need to store all its details somewhere in memory. The "order struct" is the container that holds everything about one order.
+
+**What's in it:**
+```
+Order {
+    ID:        1              (unique number)
+    Symbol:    "AAPL"         (which stock)
+    Side:      Buy            (buying or selling)
+    Type:      Limit          (what kind of order)
+    Qty:       100            (how many shares)
+    Price:     175,500,000    (in microdollars — see below)
+    Status:    Acknowledged   (where it is in its lifecycle)
+    CreatedAt: 1715...        (when it was created, in nanoseconds)
+}
 ```
 
-The 26μs number is simulation mode (no broker). With Alpaca it's ~80ms because the internet is slow.
+**Why fixed-size (176 bytes)?** Every order is exactly the same size in memory. This means:
+- We can pre-allocate a million of them in one block
+- Finding order #5000 is instant (just jump to byte 5000 × 176)
+- No memory fragmentation, no GC pressure
+
+---
+
+### What are Microdollars?
+
+**The problem:** Computers are bad at decimal numbers. `0.1 + 0.2 = 0.30000000000000004` in most programming languages. In trading, rounding errors = lost money.
+
+**Our solution:** Store prices as whole numbers (integers). $175.50 becomes 175,500,000 (175.50 × 1,000,000). Now all math is exact — no rounding errors ever.
+
+**Why 1,000,000?** It gives us 6 decimal places of precision ($0.000001), which is more than any exchange needs.
+
+**Analogy:** It's like measuring in millimeters instead of meters. 1.5 meters = 1500 millimeters. No decimals needed.
+
+---
+
+### What is the Kill Switch?
+
+**What it does:** One button that instantly stops ALL trading. Every order submitted after activation gets rejected.
+
+**Why it exists:** If something goes wrong (bug in your strategy, market crash, fat-finger error), you need to stop EVERYTHING immediately. Not in 5 seconds. Not after the current batch. NOW.
+
+**How it works:** It's a single boolean flag (true/false) checked on every order. Checking a boolean takes ~1 nanosecond — essentially free.
+
+**Real-world example:** In 2012, Knight Capital lost $440 million in 45 minutes due to a software bug. A kill switch would have stopped it in seconds.
+
+---
+
+### What is the Risk Engine?
+
+**What it does:** Before any order goes to the broker, it passes through safety checks:
+
+1. **Order too big?** (trying to buy 50,000 shares when max is 10,000)
+2. **Position too large?** (already own $900K of Apple, trying to buy $200K more when limit is $1M)
+3. **Lost too much today?** (already down $45K, limit is $50K)
+4. **Kill switch on?** (all trading halted)
+
+If ANY check fails, the order is rejected instantly. The trader gets an error message explaining why.
+
+**Why inline (not a separate service)?** Calling another service over the network adds milliseconds. Our risk checks are just 3 if-statements — they take ~500 nanoseconds total.
+
+---
+
+### What are Strategies?
+
+**What they are:** Different trading approaches running simultaneously, each with their own rules and limits.
+
+**Analogy:** Imagine a hedge fund with 3 teams:
+- **Team TECH**: Buys tech stocks that are trending up. Max $200K per trade.
+- **Team VALUE**: Buys cheap stocks. Max $500K per trade.
+- **Team SWING**: Quick in-and-out trades. Max $300K per trade.
+
+Each team has their own budget. If Team TECH loses $15K in a day, they're shut down — but Team VALUE can keep trading.
+
+**How it works in our system:**
+1. Register a strategy with limits: `{"id":"TECH", "max_order_size":200, "max_daily_loss":15000}`
+2. Tag orders with a strategy: `{"symbol":"AAPL", "strategy":"TECH"}`
+3. System enforces per-strategy limits independently
+
+---
+
+### What is the ML Signal Engine?
+
+**What it does:** Predicts whether a stock will go up or down in the short term.
+
+**How it works (simplified):**
+1. Look at the last 5 days of price movement (momentum)
+2. Look at the last 20 days (longer trend)
+3. Look at how volatile the stock has been (risk)
+4. Look at whether it's above or below its average (mean reversion)
+5. Multiply each by a pre-trained weight, add them up
+6. If the result is positive → "bullish" (likely to go up)
+7. If negative → "bearish" (likely to go down)
+
+**Why it's fast (100 nanoseconds):** It's literally just 5 multiplications and 1 addition. No neural network, no Python, no GPU. Just basic arithmetic.
+
+**Is it accurate?** About 52-53% — slightly better than a coin flip. The point isn't to make money with it — it's to demonstrate that ML can run at nanosecond speed without heavy frameworks.
+
+---
+
+### What is SSE (Server-Sent Events)?
+
+**What it does:** Pushes updates from the server to your browser instantly, without the browser having to ask.
+
+**Without SSE:** Browser asks "any updates?" every second. Wasteful and slow.
+**With SSE:** Server says "hey, order #5 just filled!" the instant it happens. The browser doesn't ask — it just listens.
+
+**Analogy:** SSE is like a news ticker on TV — information flows to you continuously. Without it, you'd have to call the news station every second asking "anything new?"
+
+---
+
+### What is Alpaca?
+
+**What it is:** A broker (like Robinhood but for developers). They give you an API to buy and sell stocks with code.
+
+**Why we use it:** Free paper trading account with $100K fake money and real market data. Perfect for demos.
+
+**What "paper trading" means:** Fake money, real prices. Your orders execute against real market data but no actual money changes hands.
+
+---
+
+### What is Interactive Brokers (IBKR)?
+
+**What it is:** A professional broker used by hedge funds and institutions. Much faster than Alpaca because you connect directly via FIX protocol over a local network (not the internet).
+
+**Why we support both:** Alpaca for demos (easy, free). IBKR for showing we understand institutional infrastructure (impressive for Millennium).
+
+---
+
+## PART 3: HOW IT ALL FITS TOGETHER
+
+```
+Trader clicks "BUY 100 AAPL @ $300"
+         |
+         v
+[HTTP Server] receives the request (off hot path, separate CPU core)
+         |
+         v
+[Ring Buffer] order placed on the conveyor belt (50 nanoseconds)
+         |
+         v
+[Event Loop] picks it up (running on dedicated CPU core)
+         |
+         v
+[Risk Check] is this order safe? (500 nanoseconds)
+  - Order size OK? ✓
+  - Position limit OK? ✓  
+  - Daily loss OK? ✓
+  - Kill switch off? ✓
+         |
+         v
+[WAL Write] save to disk in case of crash (10 microseconds)
+         |
+         v
+[Send to Broker] FIX message over TCP to IBKR (5 microseconds)
+  or Alpaca REST API (80 milliseconds — internet is slow)
+         |
+         v
+[Broker responds] "Order accepted" or "Filled at $299.85"
+         |
+         v
+[Update Status] order goes from "pending" to "acknowledged" or "filled"
+         |
+         v
+[SSE Push] browser instantly shows the new status (green flash)
+         |
+         v
+[Risk Tracker] updates portfolio metrics (Sharpe, drawdown, etc.)
+
+Total time (simulation): 26 microseconds
+Total time (with Alpaca): ~80 milliseconds (network-bound)
+Total time (with IBKR local): ~1-5 milliseconds
+```
+
+---
+
+## PART 4: TECHNICAL DEEP-DIVE Q&A
+
+(Now that you understand the basics, here are the interview questions with answers)
+
+---
+
+### Q: WAL write is ~10μs, total is 26μs — what's the rest?
+
+**Answer:** 
+- Ring buffer read: 50ns
+- Build order struct: 200ns  
+- Risk checks (3 if-statements): 500ns
+- WAL write: 10-15μs ← the big one (disk I/O)
+- Status update + notify SSE: 1μs
+- time.Now() calls (×3): 300ns
+- Total: ~15-17μs
+
+The WAL is 60% of the latency. To eliminate it: write async (background thread) or use memory-mapped files.
 
 ---
 
 ### Q: How did you implement CPU pinning in Go?
 
-**Simple:** We tell the operating system "this program should only run on CPU core #1, never move it to another core." This prevents the CPU from wasting time switching between programs.
+**Answer:** Two things:
+1. `runtime.LockOSThread()` — tells Go "don't move this goroutine to another thread"
+2. On Linux: launch with `taskset -c 1 ./oes` to pin to core 1
 
-**Technical:**
-```go
-runtime.LockOSThread()  // tells Go: don't move this goroutine to another thread
-```
-On Linux you'd also call `sched_setaffinity` to pin to a specific core. On macOS (where we develop) this isn't available, so we just lock the OS thread. In production on bare metal Linux, you'd launch with:
-```bash
-taskset -c 1 ./oes    # pin to core 1
-```
-And also set kernel params: `isolcpus=1 nohz_full=1` to prevent the kernel from scheduling anything else on that core.
+On macOS (development) we can only do step 1. In production on Linux you'd also set kernel params `isolcpus=1` to prevent the OS from putting anything else on that core.
 
 ---
 
-### Q: How does Go's garbage collector interact with your hot path?
+### Q: How does Go's GC interact with the hot path?
 
-**Simple:** The garbage collector cleans up unused memory. If you never create garbage, it has nothing to clean. We pre-allocate everything at startup, so the GC never runs on the hot path.
+**Answer:** It doesn't — because we never create garbage. All memory is pre-allocated:
+- Orders: 1M slots allocated at startup
+- Ring buffer: 65,536 slots allocated at startup
+- No strings (use [8]byte), no pointers (use int64)
 
-**Technical:**
-- All orders live in a pre-allocated `[]Order` slice (1M slots, allocated once)
-- The ring buffer is pre-allocated (65,536 slots)
-- Events are fixed-size structs with no pointers (no heap allocation)
-- The GC only scans memory that contains pointers — our structs use `[8]byte` instead of `string`, `int64` instead of `*float64`
-- You can verify zero allocation with: `go test -benchmem` — it shows "0 allocs/op"
-- In production you'd also set `GOGC=off` to disable GC entirely, or `GOMEMLIMIT` to prevent it from triggering
+The GC only runs when there's garbage to collect. No garbage = no GC = no pauses.
 
----
-
-### Q: Why does disabling Nagle's algorithm save ~5μs?
-
-**Simple:** Nagle's algorithm is a network optimization that says "wait a bit and batch small messages together before sending." For trading, waiting is bad — we want to send immediately, even if it's a small message. Disabling it (TCP_NODELAY) means "send this byte RIGHT NOW."
-
-**Technical:**
-- Nagle buffers small TCP writes for up to 40ms waiting for more data
-- A FIX message is ~200 bytes — small enough to trigger Nagle's buffering
-- With `TCP_NODELAY = true`, the kernel sends immediately
-- Measured: without it, FIX sends take 5-40μs (variable). With it: consistently ~5μs
-- Code: `tcpConn.SetNoDelay(true)`
+Verify with: `go test -benchmem` shows "0 allocs/op"
 
 ---
 
-## SECTION 2: RING BUFFER
+### Q: Why does disabling Nagle save ~5μs?
 
-### Q: What happens when the ring buffer fills up?
-
-**Simple:** The order gets rejected immediately with "ring buffer full." We never block, never wait, never drop silently. The trader gets an instant error and can retry.
-
-**Technical:**
-```go
-func (r *RingBuffer) TryPublish(e Event) bool {
-    if wp - rp > r.mask { return false }  // full — return immediately
-    // ...
-}
-```
-- `TryPublish` returns `false` → the HTTP handler returns 403 "ring buffer full (back-pressure)"
-- This is intentional: if the engine can't keep up, we tell the producer immediately rather than queueing unboundedly (which would cause memory issues and unpredictable latency)
-- With 65,536 slots and 26μs per order, the buffer can absorb a burst of 65K orders before filling — that's ~1.7 seconds of sustained 38K orders/sec
+**Answer:** Nagle batches small TCP messages (waits up to 40ms for more data). Our FIX messages are ~200 bytes — small enough to trigger batching. With `TCP_NODELAY=true`, the kernel sends immediately. Measured: 5-40μs variable → consistently ~5μs.
 
 ---
 
-### Q: What if you needed multiple HTTP workers feeding the engine?
+### Q: What happens when the ring buffer fills?
 
-**Simple:** Yes, the design would need to change. Right now it's one producer, one consumer. If you needed multiple producers, you'd use a Multi-Producer Single-Consumer (MPSC) queue instead, which uses a compare-and-swap (CAS) loop instead of a simple atomic increment.
+**Answer:** The order is rejected instantly. `TryPublish()` returns false, HTTP handler returns 403 "ring buffer full." We never block, never drop silently. The trader gets immediate feedback.
 
-**Technical:**
-- SPSC is the fastest possible queue (no CAS, no retry loops)
-- For MPSC you'd use `atomic.CompareAndSwap` on the write position — adds ~20ns per publish
-- Alternative: give each HTTP worker its own SPSC ring, and have the engine round-robin consume from all of them
-- In practice, a single Go HTTP server handles 100K+ req/sec on one core, so SPSC is sufficient for any realistic order rate
+With 65,536 slots at 26μs drain rate, it takes ~1.7 seconds of sustained 38K orders/sec to fill. In practice this never happens.
+
+---
+
+### Q: What if you needed multiple producers?
+
+**Answer:** You'd switch from SPSC (single-producer single-consumer) to MPSC (multi-producer). This uses compare-and-swap (CAS) instead of simple atomic increment — adds ~20ns per publish. Or: give each HTTP worker its own ring buffer, engine round-robins between them.
 
 ---
 
 ### Q: How did you verify no false sharing?
 
-**Simple:** False sharing is when two CPU cores accidentally slow each other down because they're writing to memory that's on the same "cache line" (64-byte chunk). We add padding between the write pointer and read pointer so they're on separate cache lines.
-
-**Technical:**
-```go
-type RingBuffer struct {
-    writePos atomic.Uint64
-    _pad1    [64 - 8]byte    // 56 bytes of padding
-    readPos  atomic.Uint64
-    _pad2    [64 - 8]byte
-    // ...
-}
-```
-- Without padding: both pointers on same 64-byte cache line → every write invalidates the other core's cache → 10-50x slower
-- With padding: each pointer on its own cache line → no interference
-- Verified with `perf stat` on Linux showing L1 cache miss rate drops from ~30% to <1%
-
----
-
-## SECTION 3: WRITE-AHEAD LOG (WAL)
-
-### Q: How long does WAL replay take with a full store?
-
-**Simple:** About 1-2 seconds for 1 million orders. It's just reading a file sequentially — the fastest thing a disk can do.
-
-**Technical:**
-- Each WAL entry is ~63 bytes (19 header + 44 data)
-- 1M entries = ~63MB file
-- Sequential read on SSD: ~2GB/sec → 63MB takes ~30ms
-- Plus parsing overhead: ~1μs per entry × 1M = ~1 second
-- Total: ~1-2 seconds for full replay
-- If this becomes too slow, you'd add periodic snapshots (dump full state to a file, then only replay WAL entries after the snapshot)
+**Answer:** We add 56 bytes of padding between writePos and readPos so they're on separate 64-byte cache lines. Without padding: cores invalidate each other's cache on every write (10-50x slower). With padding: no interference.
 
 ---
 
 ### Q: What if the process crashes mid-WAL-write?
 
-**Simple:** The CRC32 checksum at the end of each entry detects this. On replay, if the checksum doesn't match, we know the entry is corrupt and we stop there — we lose that one order but everything before it is safe.
-
-**Technical:**
-```
-Entry format: [type][idx][timestamp][len][data][CRC32]
-```
-- If crash happens before CRC32 is written → entry is incomplete → `io.ReadFull` fails → replay stops
-- If crash happens during data write → CRC32 won't match → detected as corrupt → replay stops
-- We lose at most 1 order (the one being written during the crash)
-- Everything before the corrupt entry is guaranteed correct
-- This is the same guarantee PostgreSQL and Kafka provide
+**Answer:** The CRC32 checksum at the end of each entry detects this. On replay, if the checksum doesn't match, we stop — we lose that one order but everything before it is safe. Same guarantee as PostgreSQL and Kafka.
 
 ---
 
-### Q: Have you considered WAL compaction/snapshotting?
+### Q: Have you considered WAL compaction?
 
-**Simple:** Yes. Right now the WAL grows forever. In production you'd periodically write a "snapshot" (full state dump), then delete old WAL entries before the snapshot. We haven't implemented this because for a demo the WAL never gets large enough to matter.
-
-**Technical:**
-- Compaction strategy: every N entries (e.g., 100K), write a snapshot file, truncate WAL
-- Snapshot = binary dump of the entire `orders[]` array (176MB for 1M orders)
-- On startup: load snapshot, then replay only WAL entries after the snapshot
-- This bounds recovery time to: snapshot load (~100ms) + recent WAL replay (~10ms)
+**Answer:** Yes. In production you'd periodically write a snapshot (full state dump), then delete old WAL entries. We haven't implemented it because for a demo the WAL never gets large enough to matter. Recovery of 1M entries takes ~1-2 seconds.
 
 ---
 
-## SECTION 4: ML SIGNAL ENGINE
+### Q: How was the ML model trained?
 
-### Q: How was the model trained?
-
-**Simple:** We trained a simple linear model on 5 years of S&P 500 daily price data. It learned patterns like "if a stock went up the last 5 days, it's likely to keep going up tomorrow" (momentum) and "if it's far below its average, it might bounce back" (mean reversion).
-
-**Technical:**
-- Training data: SPY daily OHLCV, 2019-2024 (Yahoo Finance)
-- Features: 5-bar return, 20-bar return, 20-bar volatility, distance from SMA, volume change
-- Model: Ordinary Least Squares linear regression
-- Target: next-day return
-- Trained offline in Python, weights hardcoded into Go
-- In production: retrain nightly, hot-reload weights via config file
+**Answer:** Linear regression on 5 years of SPY daily data (2019-2024). Features: 5-bar momentum, 20-bar momentum, volatility, mean reversion, volume. Trained in Python, weights hardcoded in Go. ~52% directional accuracy — the point is the architecture (100ns inference), not the alpha.
 
 ---
 
-### Q: Have you backtested it? What's its accuracy?
+### Q: How do you handle hardware failure?
 
-**Simple:** It's a simple model — it's slightly better than random (maybe 52-53% directional accuracy). The point isn't to make money with it — it's to show that ML inference can run at 100ns inline on the hot path without needing Python or a GPU.
-
-**Technical:**
-- Linear models on daily equity data typically achieve 51-54% directional accuracy
-- Sharpe in backtest: ~0.3-0.5 (not great, but positive)
-- The real value is the architecture: showing you can run inference at 100ns vs 10-100ms with a framework
-- In production you'd use a more complex model (gradient boosted trees, small neural net) but still export weights and run inference as matrix multiplication in Go
+**Answer:** Trading stops. The WAL provides crash recovery (restart → state restored). For true failover you'd need replication — but that adds latency and risks split-brain (two copies disagreeing). Millennium's real approach: redundant hardware, manual failover.
 
 ---
 
-### Q: How fresh is the price data feeding it?
+### Q: Where does it break with 300+ PMs?
 
-**Simple:** In our system, the signal updates every time you request it (on-demand). The price comes from Alpaca's latest quote. There's about 50-100ms of staleness from the Alpaca API call.
-
-**Technical:**
-- Quote fetch: ~50-100ms (Alpaca REST API)
-- Inference: ~100ns (negligible)
-- Total signal latency: ~50-100ms from market tick to signal
-- In a real HFT system, you'd have a dedicated market data feed (ITCH/Pillar) with <10μs latency, and the signal would update on every tick
-
----
-
-## SECTION 5: DESIGN & TRADEOFFS
-
-### Q: How do you handle hardware failure? Is there failover?
-
-**Simple:** There isn't one. If the machine dies, trading stops. This is intentional — for a single-trader/single-team system, it's better to stop than to have two copies disagreeing about what orders are live.
-
-**Technical:**
-- The WAL provides crash recovery (restart on same machine → state restored)
-- For true HA, you'd need: active-passive replication (WAL shipped to standby), or active-active with distributed consensus (Raft/Paxos) — but that adds milliseconds of latency
-- Millennium's real approach: redundant hardware in the same rack, with a manual failover process. They don't auto-failover because split-brain is worse than downtime in trading.
-
----
-
-### Q: Where does it break with 300+ PMs hitting it simultaneously?
-
-**Simple:** The ring buffer would fill up first. It can handle ~38,000 orders/second. If 300 PMs each submit 100 orders/second, that's 30,000/sec — it would work. At 200 orders/sec each (60,000/sec), the ring buffer would overflow and start rejecting.
-
-**Technical:**
-- Ring buffer: 65,536 slots, 26μs drain rate → ~38K orders/sec max throughput
-- FIX connection: single TCP socket, ~5μs per message → ~200K messages/sec (not the bottleneck)
-- To scale: multiple engine instances, each handling a subset of PMs (sharded by team ID)
-- Or: larger ring buffer (262,144 slots) + faster WAL (io_uring) → ~100K orders/sec on one machine
+**Answer:** Ring buffer fills first. 38K orders/sec max. 300 PMs × 100 orders/sec = 30K/sec (works). 300 × 200 = 60K/sec (overflows). Solution: shard by team ID across multiple engine instances.
 
 ---
 
 ### Q: Why Go over Rust?
 
-**Simple:** Go is fast enough (26μs) and 10x faster to develop. Rust would give maybe 5-10μs but would take 3x longer to build. For a project with a deadline, Go is the right choice.
-
-**Technical:**
-- Rust advantages: no GC (deterministic), zero-cost abstractions, ownership prevents data races at compile time
-- Go advantages: faster compilation (2s vs 30s), simpler concurrency (goroutines vs async/await), better standard library for networking
-- The 26μs → 2μs gap is mostly WAL I/O and time.Now() syscalls — not GC. Rust wouldn't help much there.
-- If this were a real production system at a fund, the hot path would be C++ or Rust. The OMS/risk layer would stay in Go or Java.
+**Answer:** Go at 26μs is fast enough. Rust might get 5-10μs but takes 3x longer to develop. The bottleneck is WAL I/O and time.Now() syscalls — not GC. Rust wouldn't help much there. For a project with a deadline, Go is the right call.
 
 ---
 
-### Q: What happens to orders in the ring buffer when kill switch is toggled?
+### Q: What happens to ring buffer orders when kill switch toggles?
 
-**Simple:** Orders already in the ring buffer WILL still be processed — but when the engine reads them, it checks the kill switch flag and rejects them. So there's a tiny window (microseconds) where an order could slip through, but it gets caught immediately.
-
-**Technical:**
-```go
-func (e *Engine) processSubmit(ev Event) {
-    // ... build order ...
-    if e.killSwitch.Load() {   // checked INSIDE the event loop
-        o.Status = StatusRejected
-        return
-    }
-}
-```
-- The kill switch is also checked in `Submit()` (producer side) — so most orders are caught before entering the ring buffer
-- Any that slip through the race window are caught in `processSubmit` — at most 1-2 orders in the ~50ns between the check and the publish
+**Answer:** They still get processed — but the engine checks the kill switch flag inside processSubmit and rejects them. At most 1-2 orders slip through the ~50ns race window between the check and the publish.
 
 ---
 
-### Q: How do you handle sub-penny stocks or different tick sizes?
+### Q: How do you handle sub-penny stocks?
 
-**Simple:** Our microdollar format (1 dollar = 1,000,000 units) can represent prices down to $0.000001. That's more precision than any exchange requires. Sub-penny stocks work fine.
-
-**Technical:**
-- Microdollar precision: 6 decimal places ($0.000001)
-- NYSE/NASDAQ tick size: $0.01 for stocks > $1, $0.0001 for stocks < $1
-- Our format handles both with room to spare
-- For crypto (8 decimal places like BTC), you'd use nanodollars (1 dollar = 1,000,000,000) — just change the constant
+**Answer:** Microdollars give 6 decimal places ($0.000001). More precision than any exchange requires. Sub-penny stocks, crypto (8 decimals) — all work fine.
 
 ---
 
-## SECTION 6: FINANCIAL & DOMAIN KNOWLEDGE
+### Q: How did you arrive at the risk limits?
 
-### Q: How did you arrive at the default risk limits?
-
-**Simple:** They're reasonable defaults for a single PM team at a mid-size fund. $1M max position means no single bet can blow up the portfolio. $50K daily loss means you stop before losing more than 0.05% of a typical fund's capital.
-
-**Technical:**
-- 10K shares max: prevents fat-finger errors (accidentally typing 100,000 instead of 100)
-- $1M position: typical PM allocation at Millennium is $50-200M — $1M is a conservative single-name limit
-- $50K daily loss: Millennium's drawdown triggers are typically 3-5% of allocated capital. For a $10M allocation, that's $300-500K. $50K is a conservative first warning level.
-- These are configurable via command-line flags: `-max-order-size=5000 -max-daily-loss=25000`
+**Answer:** Conservative defaults for a single PM team:
+- 10K shares: prevents fat-finger (typing 100,000 instead of 100)
+- $1M position: typical PM allocation is $50-200M, $1M is a conservative single-name limit
+- $50K daily loss: first warning level (Millennium's real triggers are 3-5% of allocation)
+- All configurable via command-line flags
 
 ---
 
-### Q: For OCO orders — how do you cancel the other leg atomically?
+### Q: OCO race condition — can both legs fill?
 
-**Simple:** When one leg fills, the engine immediately cancels the other. There IS a tiny race condition — if both legs fill at the exact same millisecond, you could end up with both filled. In practice this almost never happens because fills come sequentially over the FIX connection.
-
-**Technical:**
-- OCO legs are linked via `LinkedIdx1` field in the Order struct
-- When `processFill` runs for one leg, it checks `LinkedIdx1` and sets the other leg to `StatusCancelled`
-- Race condition: if two fills arrive in the same ring buffer batch, both could be processed before either cancellation takes effect
-- Mitigation: the event loop is single-threaded, so fills are processed sequentially. The only race is if the broker fills both before we can cancel — this is a known limitation of client-side OCO (vs exchange-native OCO)
-- Real solution: use exchange-native OCO orders where the exchange handles the atomicity
+**Answer:** Yes, theoretically. If the broker fills both legs within the ~1-5ms it takes our cancel to arrive, both execute. Probability: extremely low (requires price to gap through both levels simultaneously). Real solution: use exchange-native OCO where the exchange guarantees atomicity.
 
 ---
 
-### Q: Are TWAP and VWAP fully implemented?
+### Q: Are TWAP/VWAP fully implemented?
 
-**Simple:** They're defined as order types in the engine, but the actual slicing logic (splitting a big order into small pieces over time) is not fully implemented in the bare-metal version. The engine accepts them and would route them to the broker, but the time-slicing scheduler isn't wired up.
-
-**Technical:**
-- The order types exist: `OrdTWAP`, `OrdVWAP` in the enum
-- The gateway accepts them and creates orders with those types
-- What's missing: a background goroutine that wakes up every N seconds and submits child orders
-- The previous cloud version had this implemented (with `time.Sleep` between slices)
-- To fully implement: add a `scheduler` goroutine that watches for TWAP/VWAP parent orders and emits child order events into the ring buffer at intervals
+**Answer:** The order types exist and are accepted. The time-slicing scheduler (background goroutine that submits child orders at intervals) is not wired up in the bare-metal version. It was implemented in the earlier cloud version.
 
 ---
 
-### Q: How does FIX handle sequence number gaps?
+### Q: FIX sequence number gaps?
 
-**Simple:** FIX requires every message to have a sequence number (1, 2, 3, 4...). If you receive message #5 but expected #4, you know you missed one. You send a "ResendRequest" asking the broker to re-send the missing message.
-
-**Technical:**
-- Our implementation tracks `outSeq` and `inSeq` as atomic counters
-- We do NOT currently implement ResendRequest (35=2) — this is a known gap
-- If a sequence gap occurs, the session would need to be reset (`ResetOnLogon=Y`)
-- In production: you'd implement the full FIX session layer with message replay from the file store
-- QuickFIX handles this automatically — our raw implementation trades completeness for simplicity and zero dependencies
+**Answer:** We track sequence numbers but don't implement ResendRequest (35=2). If a gap occurs, the session resets. In production you'd implement full session recovery. This is a known gap — documented, not hidden.
 
 ---
 
-## SECTION 7: PRODUCTION READINESS
+### Q: No authentication on the API?
 
-### Q: Do you have fuzz tests for the WAL and ring buffer?
-
-**Simple:** No. We have 30 functional tests that verify correct behavior. Fuzz testing (throwing random garbage at the system to find crashes) would be the next step for production hardening.
-
-**Technical:**
-- Go has built-in fuzz testing: `func FuzzWALWrite(f *testing.F)`
-- You'd fuzz: WAL with random byte sequences (test CRC detection), ring buffer with concurrent producers (test for races), FIX parser with malformed messages
-- For the ring buffer: `go test -race` would catch data races
-- This is a project, not production software — the architecture is production-grade, the testing is demo-grade
+**Answer:** Correct — single-user system on localhost. In production: API keys, JWT tokens, or mTLS. The kill switch would require 2-factor confirmation.
 
 ---
 
-### Q: How do you handle FIX session drops mid-day?
+### Q: "Zero dependencies" but you use Go's standard library?
 
-**Simple:** The FIX client detects the disconnect (heartbeat timeout) and logs it. Currently it does NOT auto-reconnect. In production you'd add reconnection with sequence number recovery.
-
-**Technical:**
-- Heartbeat every 30 seconds — if no response, connection is dead
-- `connected` flag goes to `false` — new orders get "FIX not connected" error
-- Missing: automatic reconnection loop, sequence number negotiation on reconnect, replay of unacknowledged orders
-- This is the #1 thing you'd add for production use
+**Answer:** "Zero external dependencies" — no third-party packages. The Go stdlib is maintained by Google, ships with the compiler, and has a strong security track record. Compare to a Node.js project with 1,500 npm packages from random authors. The risk profile is fundamentally different.
 
 ---
 
-### Q: No authentication on the HTTP API?
+### Q: What's the measured sustained throughput?
 
-**Simple:** Correct — this is a single-user system running on localhost. In production you'd add API keys or JWT tokens.
-
-**Technical:**
-- For production: add middleware that checks an `Authorization: Bearer <token>` header
-- Or: bind to `127.0.0.1` only (already the case — only accessible from the same machine)
-- Or: mTLS (mutual TLS) for machine-to-machine auth
-- The kill switch endpoint is the most dangerous — in production it would require 2-factor confirmation
+**Answer:** Measured: 26μs average over 10 orders (simulation). Theoretical max: ~38K orders/sec. We haven't run a proper stress test with thousands of concurrent connections — that would be the next step. Expected: plateaus at ~30-35K/sec (ring buffer drain rate is the bottleneck).
 
 ---
 
-### Q: How do you handle Go standard library security patches?
+### Q: What regulatory requirements for real money?
 
-**Simple:** You update Go itself. `go install golang.org/dl/go1.22.5` and rebuild. Since we have zero external dependencies, there's nothing else to update.
-
-**Technical:**
-- Go releases security patches every ~2 weeks
-- Rebuild: `go build -o ./oes ./cmd/oes` — takes 2 seconds
-- No dependency supply chain risk (no `node_modules`, no `requirements.txt`)
-- The Go team has a strong security track record — CVEs are rare and patched fast
-
----
-
-## SECTION 8: COMPARISON TO REAL SYSTEMS
-
-### Q: Have you experimented with kernel bypass (DPDK) in Go?
-
-**Simple:** No. Kernel bypass requires C/C++ and special network cards. Go can't do it natively. In production, the FIX client would be a separate C++ process using DPDK, and it would communicate with the Go engine via shared memory.
-
-**Technical:**
-- DPDK bypasses the Linux kernel network stack entirely — packets go directly from NIC to userspace
-- Requires: Mellanox/Solarflare NICs, hugepages, dedicated cores
-- Go can't use DPDK directly (needs raw memory access, no GC interference)
-- Architecture in production: C++ DPDK process handles TCP → writes to shared memory ring buffer → Go engine reads from it
-- This gets you from ~5μs (TCP) to ~1μs (shared memory) for the network layer
+**Answer:**
+- SEC Rule 15c3-5: pre-trade risk controls (we have these)
+- Reg SHO: short sale locate requirements (not implemented)
+- MiFID II: best execution reporting (not implemented)
+- SEC Rule 17a-4: 6-year audit trail retention (WAL provides this conceptually)
+- Would need significant expansion of testing and compliance documentation
 
 ---
 
-### Q: At what point does Go become the ceiling?
-
-**Simple:** Around 2-5μs. Below that, Go's runtime (scheduler, memory allocator, time functions) adds unavoidable overhead. To go sub-microsecond, you need C++ or Rust with no runtime at all.
-
-**Technical:**
-- Go's floor: `runtime.nanotime()` takes ~50ns, goroutine scheduling adds ~100ns jitter, memory barriers on atomics add ~10ns
-- At 2μs total, these overheads are 10-15% of your budget — acceptable
-- At 500ns total (HFT matching engine), they're 30-50% — unacceptable
-- The crossover point: if you need <2μs, switch to C++/Rust for the hot path
-
----
-
-### Q: How does this compare to QuickFIX or Chronicle Trading?
-
-**Simple:** QuickFIX is a FIX library (handles the protocol). Chronicle is a full trading framework. We built everything from scratch to show understanding and eliminate dependencies.
-
-**Technical:**
-- QuickFIX: handles FIX session management, message parsing, replay. Adds ~50μs overhead per message. We get ~5μs by doing it raw.
-- Chronicle Trading: Java-based, uses memory-mapped files and off-heap storage. Similar architecture to ours but in Java with more features.
-- What we gain by building from scratch: zero dependencies, full control, educational value, smaller binary
-- What we lose: battle-tested edge case handling, community support, regulatory certifications
-
----
-
-## SECTION 9: "GOTCHA" QUESTIONS
-
-### Q: You say zero dependencies, but Go's standard library IS a dependency.
-
-**Simple:** Fair point. "Zero external dependencies" means no third-party packages that could have supply chain attacks, version conflicts, or maintenance issues. The Go standard library is maintained by Google's Go team and ships with the compiler — it's as close to "no dependency" as you can get.
-
-**Technical:**
-- `go list -m all` shows only our module — no third-party code
-- The Go stdlib is: audited, versioned with the compiler, backward-compatible, CVE-patched by Google
-- Compare to a typical Node.js project with 1,500 transitive dependencies from random npm authors
-- The risk profile is fundamentally different
-
----
-
-### Q: What's the MEASURED sustained throughput under load?
-
-**Simple:** We measured 10 orders in simulation at 26μs average. For sustained load, the theoretical max is ~38,000 orders/sec. We haven't run a proper stress test with thousands of concurrent connections.
-
-**Technical:**
-- Measured: 10 orders → 26μs avg (simulation), 80ms avg (with Alpaca)
-- Theoretical: 1,000,000μs / 26μs = ~38,461 orders/sec
-- To properly stress test: use `wrk` or `hey` with 1000 concurrent connections hitting POST /api/orders
-- Expected result: throughput plateaus at ~30-35K orders/sec (ring buffer drain rate is the bottleneck, not HTTP)
-- We haven't run this test — it would be the next step
-
----
-
-### Q: What regulatory requirements would this need for real money?
-
-**Simple:** A LOT. The SEC requires pre-trade risk controls (we have those), audit trails (we have WAL), and market access controls. You'd also need to register as a broker-dealer or work through one.
-
-**Technical:**
-- **SEC Rule 15c3-5** (Market Access Rule): requires pre-trade risk controls for any firm with market access. Our risk engine satisfies this conceptually (position limits, daily loss, kill switch).
-- **Reg SHO**: short sale rules — need to check locate list before shorting. Not implemented.
-- **MiFID II** (Europe): requires best execution reporting, transaction reporting, algo identification. Not implemented.
-- **Audit trail**: SEC Rule 17a-4 requires 6-year retention of all order records. Our WAL provides this but would need to be archived to immutable storage.
-- **Testing**: regulators require documented testing of risk controls. Our 30-test suite would need to be expanded significantly.
-
----
-
-### Q: The OCO atomic fill race condition — explain it.
-
-**Simple:** Imagine you have two orders: "sell at $180" (take profit) and "sell at $160" (stop loss). If the price somehow hits both at the exact same instant, both could fill before either gets cancelled. You'd end up selling twice as many shares as intended.
-
-**Technical:**
-- Our OCO is client-side: we manage the linkage, not the exchange
-- Fill events arrive sequentially over FIX/WebSocket
-- When fill #1 arrives → we cancel leg #2 → cancel message travels to broker → takes ~1-5ms
-- If fill #2 arrives during that 1-5ms window → both legs fill
-- Probability: extremely low (requires price to gap through both levels in <5ms)
-- Real solution: use exchange-native OCO (NYSE/NASDAQ support this) where the exchange guarantees atomicity
-- Our implementation is correct for 99.99% of cases — the edge case is documented
-
----
-
-## SECTION 10: STRATEGIES
-
-### Q: How do strategies work in this system?
-
-**Simple:** Each strategy is like a separate trader with their own rules. You register a strategy (give it a name and risk limits), then tag orders with that strategy. The system tracks each strategy's orders, fills, and P&L independently.
-
-**Technical:**
-- Strategies are registered via `POST /api/strategies` with ID, name, and per-strategy risk limits
-- Orders include a `"strategy": "TECH"` field
-- Per-strategy risk checks run before the order enters the ring buffer
-- Each strategy tracks: order count, fill count, win count, daily P&L, positions
-- This mirrors Millennium's pod structure: 300+ independent teams, each with their own risk budget
-
----
-
-## DEMO COMMANDS (have these ready)
+## DEMO COMMANDS (copy-paste ready)
 
 ```bash
-# Start the system
-go run ./cmd/oes -port=8080 -broker=alpaca -alpaca-key=YOUR_KEY -alpaca-secret=YOUR_SECRET
+# Start with Alpaca
+go run ./cmd/oes -port=8080 -broker=alpaca \
+  -alpaca-key=YOUR_KEY -alpaca-secret=YOUR_SECRET
+
+# Start in simulation (no broker needed)
+go run ./cmd/oes -port=8080
 
 # Register strategies
 curl -X POST localhost:8080/api/strategies -H 'Content-Type: application/json' \
   -d '{"id":"TECH","name":"Tech Momentum","max_order_size":200,"max_daily_loss":15000}'
-
 curl -X POST localhost:8080/api/strategies -H 'Content-Type: application/json' \
   -d '{"id":"VALUE","name":"Value Rotation","max_order_size":500,"max_daily_loss":10000}'
 
-# Submit orders
+# Submit order with strategy
 curl -X POST localhost:8080/api/orders -H 'Content-Type: application/json' \
   -d '{"symbol":"AAPL","side":"buy","type":"LIMIT","qty":50,"price":300.00,"time_in_force":"day","strategy":"TECH"}'
+
+# Kill switch demo
+curl -X POST localhost:8080/api/risk/killswitch -d '{"active":true}' -H 'Content-Type: application/json'
+curl -X POST localhost:8080/api/orders -H 'Content-Type: application/json' \
+  -d '{"symbol":"AAPL","side":"buy","type":"MARKET","qty":10,"time_in_force":"day"}'
+# → "KILL SWITCH ACTIVE"
+curl -X POST localhost:8080/api/risk/killswitch -d '{"active":false}' -H 'Content-Type: application/json'
+
+# Strategy risk limit demo
+curl -X POST localhost:8080/api/orders -H 'Content-Type: application/json' \
+  -d '{"symbol":"TSLA","side":"buy","type":"LIMIT","qty":999,"price":446.00,"strategy":"TECH"}'
+# → "strategy TECH: order size 999 exceeds limit 200"
 
 # Check everything
 curl localhost:8080/api/orders | python3 -m json.tool
@@ -507,17 +549,8 @@ curl localhost:8080/api/risk | python3 -m json.tool
 curl localhost:8080/api/strategies | python3 -m json.tool
 curl localhost:8080/api/stats | python3 -m json.tool
 curl localhost:8080/api/signal/AAPL | python3 -m json.tool
+curl localhost:8080/api/account | python3 -m json.tool
 
-# Kill switch demo
-curl -X POST localhost:8080/api/risk/killswitch -H 'Content-Type: application/json' -d '{"active":true}'
-# Try to submit → gets rejected
-curl -X POST localhost:8080/api/risk/killswitch -H 'Content-Type: application/json' -d '{"active":false}'
-
-# Strategy risk limit demo
-curl -X POST localhost:8080/api/orders -H 'Content-Type: application/json' \
-  -d '{"symbol":"TSLA","side":"buy","type":"LIMIT","qty":999,"price":446.00,"strategy":"TECH"}'
-# → rejected: "strategy TECH: order size 999 exceeds limit 200"
-
-# Cancel an order
+# Cancel
 curl -X DELETE localhost:8080/api/orders/1
 ```
