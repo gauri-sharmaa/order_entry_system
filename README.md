@@ -1,6 +1,6 @@
 # Millennium Order Entry System
 
-A bare-metal, low-latency order entry and execution engine modeled after institutional trading infrastructure (Millennium, Citadel, Two Sigma).
+A bare-metal, low-latency order entry and execution engine modeled after institutional trading infrastructure.
 
 **Single process. Single machine. Zero cloud. Zero dependencies. Sub-microsecond event processing.**
 
