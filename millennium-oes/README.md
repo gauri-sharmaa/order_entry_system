@@ -2,7 +2,9 @@
 
 A low-latency order entry and execution engine modeled after institutional trading infrastructure. Single process, single machine, everything in memory.
 
-**Zero cloud. Zero dependencies. Zero allocations on the hot path.**
+**Standard library only. Integer prices. Single-threaded event loop.**
+
+This is an order-entry / routing engine, not an exchange matching engine. See the [top-level README](../README.md) for measured performance and known limitations.
 
 ## Architecture
 
@@ -11,12 +13,12 @@ A low-latency order entry and execution engine modeled after institutional tradi
 │  Single Process (one binary, ~5MB)                              │
 │                                                                 │
 │  ┌─────────────────────────────────────────────────────────┐   │
-│  │  HOT PATH (pinned CPU core, single-threaded)            │   │
+│  │  HOT PATH (single-threaded event loop)                  │   │
 │  │                                                         │   │
 │  │  Ring Buffer ──→ Risk Check ──→ WAL Write ──→ FIX Send  │   │
 │  │  (lock-free)     (inline)       (sequential)  (TCP)     │   │
 │  │                                                         │   │
-│  │  Latency: ~1-5μs per order (application layer)          │   │
+│  │  ~26µs avg per order (see top-level README)             │   │
 │  └─────────────────────────────────────────────────────────┘   │
 │                                                                 │
 │  ┌─────────────────────────────────────────────────────────┐   │
@@ -26,8 +28,8 @@ A low-latency order entry and execution engine modeled after institutional tradi
 │  │  FIX Reader  ──→ Fill Events ──→ Ring Buffer            │   │
 │  └─────────────────────────────────────────────────────────┘   │
 │                                                                 │
-│  Storage: Write-Ahead Log (append-only file, ~1μs per write)   │
-│  Orders:  Pre-allocated array (1M slots, ~176MB, zero GC)      │
+│  Storage: Write-Ahead Log (append-only file, CRC32)            │
+│  Orders:  Pre-allocated array (1M slots, ~176MB)               │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
@@ -42,17 +44,16 @@ A low-latency order entry and execution engine modeled after institutional tradi
 | Goroutines + mutexes | Lock-free ring buffer, single-threaded event loop |
 | JSON everywhere | Fixed-size structs, integer prices |
 | Float64 prices | Int64 microdollars (no floating point) |
-| 5-15ms per order | 1-5μs per order |
 
 ## Key Design Decisions
 
-- **Lock-free SPSC ring buffer** — same pattern as LMAX Disruptor (London Stock Exchange matching engine)
-- **Pre-allocated order store** — 1M order slots allocated at startup, zero GC pressure
+- **Lock-free SPSC ring buffer** — same idea as the LMAX Disruptor (from the LMAX exchange). Assumes one producer; see Known Limitations
+- **Pre-allocated order store** — 1M order slots allocated at startup; `processSubmit` without the WAL makes 0 allocations (`make bench`)
 - **Integer prices** — all prices stored as int64 microdollars ($175.50 = 175,500,000), eliminates floating point
 - **Single-threaded event loop** — no context switches, no lock contention, deterministic latency
-- **CPU pinning** — hot path pinned to dedicated core (Linux `sched_setaffinity`)
+- **CPU pinning (partial)** — `sched_setaffinity` on Linux, currently applied to the main goroutine rather than the event-loop goroutine
 - **Write-Ahead Log** — append-only sequential I/O, CRC32 checksums, replay on restart
-- **Raw FIX implementation** — no QuickFIX dependency, zero allocations on send path
+- **Raw FIX implementation** — no QuickFIX dependency
 - **Nagle disabled** — TCP_NODELAY on FIX connection for immediate sends
 
 ## Quick Start
@@ -93,8 +94,12 @@ millennium-oes/
 │   │   └── client.go        # Connection, message building, fill handling
 │   ├── gateway/             # HTTP server + SSE (off hot path)
 │   │   └── gateway.go       # REST API, order submission, streaming
-│   └── wal/                 # Write-Ahead Log (durability)
-│       └── wal.go           # Append, replay, CRC verification
+│   ├── wal/                 # Write-Ahead Log (durability)
+│   │   └── wal.go           # Append, replay, CRC verification
+│   ├── broker/alpaca/       # Alpaca REST broker (paper trading)
+│   ├── risk/                # Portfolio risk metrics (off hot path)
+│   ├── signal/              # Momentum signal
+│   └── strategy/            # Strategy manager
 ├── web/                     # Trading UI (HTML/CSS/JS)
 └── scripts/
     └── run-local.sh         # Build and run
@@ -115,27 +120,26 @@ GET    /api/stream          SSE real-time updates
 
 ## Performance
 
-On a modern machine (M1/M2 Mac, or Xeon server):
-- **Event loop processing**: ~500ns-2μs per order
-- **Ring buffer publish**: ~50ns
-- **WAL write**: ~1μs (sequential I/O)
-- **FIX message send**: ~5μs (TCP, Nagle disabled)
-- **Total hot path**: ~5-10μs per order
+~26µs average per order inside the event loop (simulation mode, `/api/stats`). Warm microbenchmarks:
 
-For comparison:
-- Alpaca REST API: 5-50ms (1000x slower)
-- Redis round-trip: 0.5-1ms (100x slower)
-- DynamoDB write: 5-10ms (1000x slower)
+```
+make bench
+BenchmarkRingPublishConsume      ~34 ns/op     0 allocs/op
+BenchmarkProcessSubmitNoWAL     ~108 ns/op     0 allocs/op
+BenchmarkProcessSubmitWithWAL   ~1.1 µs/op     2 allocs/op
+```
+
+Measured on an Intel Xeon 2.1GHz, Go 1.24. See the top-level README for exactly what each number covers.
 
 ## How It Mirrors Institutional Systems
 
 | Millennium/Citadel | This Project |
 |-------------------|-------------|
 | Bare metal in NY4/NY5 | Single machine, no cloud |
-| Kernel bypass (DPDK) | TCP_NODELAY, CPU pinning |
+| Kernel bypass (DPDK) | TCP_NODELAY (no kernel bypass) |
 | Lock-free structures | SPSC ring buffer |
 | Single-threaded event loop | Go event loop with LockOSThread |
 | FIX 4.2 to prime broker | Raw FIX 4.2 to IBKR |
-| Memory-mapped order book | Pre-allocated order array |
+| In-memory order state | Pre-allocated order array |
 | Sequential log for audit | Write-Ahead Log |
 | FPGA for market data | (not implemented — would need hardware) |
